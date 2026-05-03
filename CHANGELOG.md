@@ -16,4 +16,4 @@ All notable changes to this project will be documented in this file.
 
 - In-app Exit now hides to tray; tray Exit fully closes app
 - Startup and visibility behavior aligned with tray-first usage
-- README and ADR documentation updated for current behavior
+- README and contributor-facing documentation updated for current behavior

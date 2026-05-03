@@ -33,7 +33,6 @@ cmake --build build --config Release
 
 - Build succeeds locally in Release configuration.
 - Any new behavior is documented in README.md.
-- Relevant ADRs are updated if architecture or product decisions changed.
 - No unrelated formatting churn.
 
 ## Reporting Issues
