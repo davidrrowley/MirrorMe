@@ -46,10 +46,15 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
 
 ## Tiny Tool Town Submission Notes
 
+- Tool Name: MirrorMe
+- Author: David Rowley (@davidrrowley)
 - License: GPL-3.0
 - Language: C++
 - Platform: Windows
 - Suggested tags: `windows, monitor, screen-mirroring, tray, desktop-utility, cplusplus`
+- Alternate tags (utility-focused): `windows, desktop, monitor, mirroring, tray, cplusplus`
+- Alternate tags (playful-focused): `windows, tiny, fun, second-screen, tray, cplusplus`
+- Suggested theme: `terminal` (alternate: `ocean`)
 
 Add a hero screenshot or short GIF near the top of this README before submitting so Tiny Tool Town can pick up a strong preview image.
 
