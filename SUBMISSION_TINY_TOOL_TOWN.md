@@ -10,10 +10,13 @@ Use this content in the Tiny Tool Town issue template:
 	- Tiny Windows window-mirroring sidekick: pick a window, pick a monitor, and boom.
 - Tell us about your tool:
 	- MirrorMe is a tiny Windows utility that takes one app window and mirrors it to another monitor with almost zero ceremony.
-	- I built it because I wanted a dead-simple second-screen/share setup without opening a giant app or messing with complicated scenes.
+	- I built it for my own desk setup: an ultrawide screen plus a small Elgato Prompter.
+	- I wanted to control an app on the ultrawide while seeing the same app on the Prompter, like keeping Teams visible while I read a script.
+	- It gives me a dead-simple second-screen/share setup without opening a giant app or messing with complicated scenes.
 	- You right-click the tray icon, choose a source window and target monitor, and it is live.
 	- The notch popup gives quick controls for zoom, transparency, and display mode so you can tune it in seconds.
 	- It is intentionally small and opinionated: one job, fast controls, and a little bit of delight.
+	- I am sure there are many other uses, but this tiny tool was built to solve this specific workflow first.
 - GitHub Repository URL:
 	- https://github.com/davidrrowley/MirrorMe
 - Website or Demo URL (optional):

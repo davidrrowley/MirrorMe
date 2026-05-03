@@ -4,6 +4,8 @@ MirrorMe is a tiny Windows desktop utility that mirrors one app window to anothe
 
 Built for quick sharing and second-screen setups: pick a source window, pick a target monitor, and mirror immediately.
 
+I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Prompter. I often want to control an app on the ultrawide while seeing that same window on the Prompter, for example keeping Teams visible while reading a script. There are plenty of other uses, but this tiny tool was created to solve that exact problem.
+
 ## Project Status
 
 - Active prototype with stable core functionality.
