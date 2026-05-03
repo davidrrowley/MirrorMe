@@ -6,6 +6,17 @@ Built for quick sharing and second-screen setups: pick a source window, pick a t
 
 I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Prompter. I often want to control an app on the ultrawide while seeing that same window on the Prompter, for example keeping Teams visible and usable while reading a script. There are plenty of other uses I'm sure, but this tiny tool was created to solve this exact thing for me.
 
+## Screenshots
+
+**MirrorMe lives quietly in the system tray, ready when you need it.**
+![System tray icon](assets/System%20Tray.png)
+
+**Pick a window, pick a monitor — the mirror appears full-screen instantly.**
+![Mirror in action across two monitors](assets/Mirror%20In%20Action.png)
+
+**The notch popup gives quick access to zoom, transparency, display mode, and source selection.**
+![MirrorMe notch menu](assets/MirrorMe%20Notch%20Menu.png)
+
 ## Project Status
 
 - Active prototype with stable core functionality.
