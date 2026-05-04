@@ -45,7 +45,7 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
   - `Ctrl+Alt+-` Zoom out
   - `Ctrl+Alt+0` Reset zoom
   - `Ctrl+Alt+R` Reset zoom (alternate)
-  - `Ctrl+Alt+Shift+M` Mirror current foreground window to default monitor
+  - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor
 
 ## Quick Start
 
