@@ -21,7 +21,7 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
 
 - Active prototype with stable core functionality.
 - Windows-only.
-- Local build and run flow is the current distribution path.
+- Pre-built binaries available on the Releases page; source build also supported.
 
 ## Why It Is Tiny
 
@@ -47,10 +47,17 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
   - `Ctrl+Alt+R` Reset zoom (alternate)
   - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor
 
+## Download
+
+Pre-built binaries are available on the [Releases](https://github.com/davidrrowley/MirrorMe/releases) page — no build required.
+
+> **Windows SmartScreen warning:** Windows may warn that MirrorMe is from an unknown publisher. This is expected for an unsigned open-source tool. Click the dropdown arrow next to "Delete" and choose **Keep anyway**, then run the file. The full source code is available here to review.
+
 ## Quick Start
 
-1. Build and run MirrorMe.
-2. Right-click the tray icon.
+1. Download `MirrorMe.exe` from [Releases](https://github.com/davidrrowley/MirrorMe/releases) (or build from source below).
+2. Run `MirrorMe.exe` — no installer needed.
+3. Right-click the tray icon.
 3. Select a source window.
 4. Select a target monitor.
 5. MirrorMe appears on the selected monitor.
