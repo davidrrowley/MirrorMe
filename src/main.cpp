@@ -1423,6 +1423,16 @@ static void MirrorForegroundWindowToDefaultMonitor(HWND hwnd) {
         return;
     }
 
+    // Toggle: pressing the hotkey again on the same window stops mirroring.
+    if (candidate == g_state.sourceWindow && IsWindowVisible(hwnd)) {
+        g_wgcCapture.Stop();
+        g_state.wgcCaptureActive = false;
+        g_state.sourceWindow = nullptr;
+        ShowWindow(hwnd, SW_HIDE);
+        UpdateTrayIcon(hwnd);
+        return;
+    }
+
     RefreshMonitors();
     g_state.targetMonitor = PickDefaultMonitor();
     g_state.sourceWindow = candidate;
