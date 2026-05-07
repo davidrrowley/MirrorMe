@@ -140,6 +140,13 @@ static HFONT              g_popFontHdr    = nullptr;
 static HBRUSH             g_popListBrush  = nullptr;
 static UINT               g_popDpi        = 96;
 
+// Child flyout popup state
+static HWND               g_popChildHwnd    = nullptr;
+static std::vector<PItem> g_popChildItems;
+static int                g_popChildHover   = -1;
+static PopView            g_popChildView    = PopView::Root;
+static int                g_popActiveNavIdx = -1;  // index in g_popItems whose flyout is open
+
 // Scale a 96-DPI pixel constant to the current popup DPI.
 static int PopScale(int px) { return MulDiv(px, (int)g_popDpi, 96); }
 
@@ -160,6 +167,7 @@ const COLORREF kPC_Accent = RGB(0,   120, 212);
 
 // Forward declaration — defined after WgcCapture.
 RECT ComputeDestinationRect(int srcWidth, int srcHeight, const RECT& clientRect, float zoom, POINT pan = {});
+
 
 class WgcCapture {
 public:
@@ -788,7 +796,7 @@ void DrawNotch(HDC paintDc) {
 
         // Build a small Segoe UI font scaled to notch height
         LOGFONTW lf{};
-        lf.lfHeight  = -(g_state.notchRect.bottom - g_state.notchRect.top - MulDiv(8, notchDpi, 96));
+        lf.lfHeight  = -((g_state.notchRect.bottom - g_state.notchRect.top - MulDiv(8, notchDpi, 96)) * 6 / 10);
         lf.lfWeight  = FW_MEDIUM;
         lf.lfQuality = CLEARTYPE_QUALITY;
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
@@ -807,11 +815,11 @@ void DrawNotch(HDC paintDc) {
 // ── Custom dark popup menu helpers ──────────────────────────────────────────
 
 // Forward-declare so PopupNavigateTo can be called from the wndproc
-static void PopupNavigateTo(HWND hwnd, PopView view);
+static void PopupCloseFlyout();
+static void PopupOpenFlyout(HWND parentHwnd, int navItemIdx, PopView view);
 
-static int PopupWidthForView(PopView view) {
-    const int scaledW = PopScale(kPopW);
-    return (view == PopView::Root) ? scaledW : (scaledW * 9) / 4;
+static int PopupWidthForView(PopView /*view*/) {
+    return PopScale(kPopW);
 }
 
 static POINT PopupAnchorBelowNotch(HWND parentHwnd) {
@@ -833,31 +841,32 @@ static POINT PopupClampToMonitor(const POINT& desiredTopLeft, int width, int hei
     return clamped;
 }
 
-static void PopupLayout() {
+static void PopupLayout(std::vector<PItem>& items) {
     int y = PopScale(8);
-    for (auto& it : g_popItems) {
+    for (auto& it : items) {
         it.y = y;
         it.h = (it.type == PItemType::Separator) ? PopScale(kPopSepH) : PopScale(kPopItemH);
         y += it.h;
     }
 }
 
-static int PopupHitTest(int my) {
-    for (int i = 0; i < (int)g_popItems.size(); ++i) {
-        const auto& it = g_popItems[i];
+static int PopupHitTest(const std::vector<PItem>& items, int my) {
+    for (int i = 0; i < (int)items.size(); ++i) {
+        const auto& it = items[i];
         if (it.type != PItemType::Separator)
             if (my >= it.y && my < it.y + it.h) return i;
     }
     return -1;
 }
 
-static void PopupPaintItems(HDC dc) {
-    const int popW = PopupWidthForView(g_popView);
+static void PopupPaintItems(HDC dc, const std::vector<PItem>& items, int hover,
+                            PopView view, int activeNavIdx = -1) {
+    const int popW = PopupWidthForView(view);
     const int padL  = PopScale(kPopPadL);
     const int arrowW = PopScale(28);
     const int arrowR = PopScale(8);
-    for (int i = 0; i < (int)g_popItems.size(); ++i) {
-        const auto& it = g_popItems[i];
+    for (int i = 0; i < (int)items.size(); ++i) {
+        const auto& it = items[i];
 
         if (it.type == PItemType::Separator) {
             HPEN sp = CreatePen(PS_SOLID, 1, kPC_Sep);
@@ -870,7 +879,7 @@ static void PopupPaintItems(HDC dc) {
             continue;
         }
 
-        const bool hov = (i == g_popHover);
+        const bool hov = (i == hover) || (i == activeNavIdx);
         if (hov) {
             HBRUSH hb = CreateSolidBrush(kPC_Hover);
             HPEN   hp = CreatePen(PS_NULL, 0, 0);
@@ -915,13 +924,13 @@ static void PopupDestroyList() {
 static void PopupCreateList(HWND hwnd) {
     PopupDestroyList();
     RefreshSourceWindows();
-    const int popW = PopupWidthForView(g_popView);
+    const int popW = PopScale(kPopW);
     const int srcCount = (int)g_state.sourceWindows.size();
     const int visRows  = std::min(std::max(srcCount, 1), kPopMaxRows);
     g_popListH = visRows * PopScale(kPopListItemH);
 
-    const int lastItemBottom = g_popItems.empty() ? 8
-        : g_popItems.back().y + g_popItems.back().h;
+    const int lastItemBottom = g_popChildItems.empty() ? PopScale(8)
+        : g_popChildItems.back().y + g_popChildItems.back().h;
     g_popListY = lastItemBottom + 4;
 
     g_popList = CreateWindowExW(0, L"LISTBOX", nullptr,
@@ -938,89 +947,110 @@ static void PopupCreateList(HWND hwnd) {
     }
 }
 
-static void PopupNavigateTo(HWND hwnd, PopView view) {
-    g_popView  = view;
-    g_popHover = -1;
-    g_popItems.clear();
-    PopupDestroyList();
-    g_popListH = 0;
+// ── Flyout close / open ──────────────────────────────────────────────────────
 
-    auto addItem = [](PItemType t, const wchar_t* text, UINT id, bool accent = false) {
-        g_popItems.push_back({ t, text, id, accent });
-    };
-    auto addLabel = [&](const wchar_t* text, UINT id, bool accent = false) {
-        addItem(PItemType::Label, text, id, accent);
-    };
-    auto addNav = [&](const wchar_t* text, UINT id) {
-        addItem(PItemType::NavItem, text, id);
-    };
-    auto addSep = [&]() { addItem(PItemType::Separator, L"", 0); };
-    auto addBack = [&]() {
-        addItem(PItemType::BackItem, L"", kNavBack);
-        addSep();
-    };
+static void PopupCloseFlyout() {
+    if (g_popChildHwnd && IsWindow(g_popChildHwnd))
+        DestroyWindow(g_popChildHwnd);
+    // g_popChildHwnd = nullptr and g_popActiveNavIdx = -1 are set in child WM_DESTROY
+    g_popActiveNavIdx = -1;  // defensive reset in case child was already gone
+    if (g_popHwnd && IsWindow(g_popHwnd))
+        InvalidateRect(g_popHwnd, nullptr, FALSE);
+}
 
-    switch (view) {
-    case PopView::Root:
-        addLabel(L"Zoom In",    kMenuZoomIn);
-        addLabel(L"Zoom Out",   kMenuZoomOut);
-        addLabel(L"Reset Zoom", kMenuResetZoom);
-        addSep();
-        addLabel(L"Mirror Foreground Window", kTrayMenuMirrorForeground);
-        addSep();
-        addNav(L"Select Source Window",  kNavSources);
-        addNav(L"Select Target Monitor", kNavMonitors);
-        addNav(L"Display Mode", kNavDisplayMode);
-        addNav(L"Transparency", kNavTransparency);
-        addSep();
-        addLabel(L"Exit", kMenuExit);
-        break;
-    case PopView::Sources:
-        addBack();
-        break;
-    case PopView::Monitors:
-        addBack();
-        RefreshMonitors();
-        for (size_t i = 0; i < g_state.monitors.size(); ++i) {
-            std::wstring label = g_state.monitors[i].info.szDevice;
-            const bool cur = g_state.monitors[i].handle == g_state.targetMonitor;
-            if (cur) label += L" (current)";
-            addLabel(label.c_str(), kMonitorMenuBase + static_cast<UINT>(i), cur);
+static void PopupOpenFlyout(HWND parentHwnd, int navItemIdx, PopView view) {
+    // Close any existing flyout first
+    if (g_popChildHwnd && IsWindow(g_popChildHwnd)) {
+        DestroyWindow(g_popChildHwnd);
+        // child WM_DESTROY sets g_popChildHwnd = nullptr, g_popActiveNavIdx = -1
+    }
+    g_popActiveNavIdx = navItemIdx;
+    g_popChildView    = view;
+    g_popChildHover   = -1;
+    g_popChildItems.clear();
+
+    // Build items for this view (no Back button — flyout is dismissed by hovering away)
+    {
+        auto addLabel = [&](const wchar_t* text, UINT id, bool accent = false) {
+            g_popChildItems.push_back({ PItemType::Label, text, id, accent });
+        };
+        switch (view) {
+        case PopView::Monitors:
+            RefreshMonitors();
+            for (size_t i = 0; i < g_state.monitors.size(); ++i) {
+                std::wstring label = g_state.monitors[i].info.szDevice;
+                const bool cur = g_state.monitors[i].handle == g_state.targetMonitor;
+                if (cur) label += L" (current)";
+                addLabel(label.c_str(), kMonitorMenuBase + static_cast<UINT>(i), cur);
+            }
+            break;
+        case PopView::Transparency:
+            for (int pct = 0; pct <= 100; pct += 10) {
+                const std::wstring lbl = std::to_wstring(pct) + L"%";
+                addLabel(lbl.c_str(), kOpacityMenuBase + static_cast<UINT>(pct),
+                    pct == g_state.opacityPercent);
+            }
+            break;
+        case PopView::DisplayMode:
+            addLabel(L"Foreground Exclusive", kDisplayModeForegroundCmd,
+                g_displayMode == DisplayMode::ForegroundExclusive);
+            addLabel(L"Background Underlay", kDisplayModeBackgroundCmd,
+                g_displayMode == DisplayMode::BackgroundUnderlay);
+            break;
+        default:
+            break; // Sources: no label items, just the listbox below
         }
-        break;
-    case PopView::Transparency:
-        addBack();
-        for (int pct = 0; pct <= 100; pct += 10) {
-            const std::wstring label = std::to_wstring(pct) + L"%";
-            addLabel(label.c_str(), kOpacityMenuBase + static_cast<UINT>(pct), pct == g_state.opacityPercent);
-        }
-        break;
-    case PopView::DisplayMode:
-        addBack();
-        addLabel(L"Foreground Exclusive", kDisplayModeForegroundCmd,
-            g_displayMode == DisplayMode::ForegroundExclusive);
-        addLabel(L"Background Underlay", kDisplayModeBackgroundCmd,
-            g_displayMode == DisplayMode::BackgroundUnderlay);
-        break;
+    }
+    PopupLayout(g_popChildItems);
+
+    const int childW = PopScale(kPopW);
+    const int itemsH = g_popChildItems.empty() ? PopScale(8)
+        : g_popChildItems.back().y + g_popChildItems.back().h + PopScale(8);
+    const int srcRows = std::min(kPopMaxRows, std::max(1, (int)g_state.sourceWindows.size()));
+    const int estimatedH = (view == PopView::Sources)
+        ? itemsH + srcRows * PopScale(kPopListItemH) + PopScale(8)
+        : itemsH;
+
+    // Position to the right of the parent popup, aligned to the nav item's top
+    POINT navPt = { PopupWidthForView(PopView::Root), g_popItems[navItemIdx].y };
+    ClientToScreen(g_popHwnd, &navPt);
+    const POINT desired = { navPt.x + PopScale(4), navPt.y };
+    const POINT pos = PopupClampToMonitor(desired, childW, estimatedH);
+
+    g_popChildHwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"MirrorMePopup", nullptr,
+        WS_POPUP,
+        pos.x, pos.y, childW, estimatedH,
+        parentHwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_popChildHwnd) {
+        g_popActiveNavIdx = -1;
+        InvalidateRect(parentHwnd, nullptr, FALSE);
+        return;
     }
 
-    PopupLayout();
+    BOOL dark = TRUE;
+    DwmSetWindowAttribute(g_popChildHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+    DwmSetWindowAttribute(g_popChildHwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
 
-    if (view == PopView::Sources)
-        PopupCreateList(hwnd);
+    if (view == PopView::Sources) {
+        PopupCreateList(g_popChildHwnd);
+        const int actualH = g_popListY + g_popListH + PopScale(8);
+        SetWindowPos(g_popChildHwnd, nullptr, pos.x, pos.y, childW, actualH,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 
-    const int newW = PopupWidthForView(view);
-    const int newH = (g_popItems.empty() ? 0 : g_popItems.back().y + g_popItems.back().h)
-                   + (g_popList ? g_popListH + 8 : 8);
-
-    const POINT anchor = PopupAnchorBelowNotch(g_popParent);
-    const POINT desiredTopLeft{ anchor.x - (newW / 2), anchor.y };
-    const POINT clamped = PopupClampToMonitor(desiredTopLeft, newW, newH);
-    SetWindowPos(hwnd, nullptr, clamped.x, clamped.y, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
-    InvalidateRect(hwnd, nullptr, TRUE);
+    ShowWindow(g_popChildHwnd, SW_SHOWNOACTIVATE);
+    InvalidateRect(parentHwnd, nullptr, FALSE); // show active-nav highlight
 }
 
 LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    const bool isChild = (hwnd == g_popChildHwnd);
+    std::vector<PItem>& items = isChild ? g_popChildItems : g_popItems;
+    int& hover  = isChild ? g_popChildHover : g_popHover;
+    PopView& view = isChild ? g_popChildView  : g_popView;
+
     switch (msg) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
@@ -1031,16 +1061,31 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HGDIOBJ old = SelectObject(mem, bmp);
         HBRUSH bgBr = CreateSolidBrush(kPC_Bg);
         FillRect(mem, &cl, bgBr); DeleteObject(bgBr);
-        PopupPaintItems(mem);
+        PopupPaintItems(mem, items, hover, view, isChild ? -1 : g_popActiveNavIdx);
         BitBlt(hdc, 0, 0, cl.right, cl.bottom, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
         EndPaint(hwnd, &ps);
         return 0;
     }
     case WM_MOUSEMOVE: {
-        const int newHov = PopupHitTest(GET_Y_LPARAM(lp));
-        if (newHov != g_popHover) {
-            g_popHover = newHov;
+        const int newHov = PopupHitTest(items, GET_Y_LPARAM(lp));
+        if (newHov != hover) {
+            hover = newHov;
+            if (!isChild) {
+                // Hovering a nav item opens its flyout; a regular item closes it.
+                if (newHov >= 0 && items[newHov].type == PItemType::NavItem) {
+                    if (newHov != g_popActiveNavIdx) {
+                        const UINT cmdId = items[newHov].cmdId;
+                        PopView flyView = PopView::Sources;
+                        if (cmdId == kNavMonitors)          flyView = PopView::Monitors;
+                        else if (cmdId == kNavDisplayMode)  flyView = PopView::DisplayMode;
+                        else if (cmdId == kNavTransparency) flyView = PopView::Transparency;
+                        PopupOpenFlyout(hwnd, newHov, flyView);
+                    }
+                } else if (newHov >= 0) {
+                    PopupCloseFlyout();
+                }
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
@@ -1048,36 +1093,82 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_MOUSELEAVE:
-        g_popHover = -1;
+        hover = -1;
+        if (!isChild) {
+            // Keep the flyout open if the mouse moved directly into it.
+            bool inChild = false;
+            if (g_popChildHwnd && IsWindow(g_popChildHwnd)) {
+                POINT cur; GetCursorPos(&cur);
+                RECT cr; GetWindowRect(g_popChildHwnd, &cr);
+                inChild = (PtInRect(&cr, cur) != 0);
+            }
+            if (!inChild) PopupCloseFlyout();
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     case WM_LBUTTONDOWN: {
-        const int idx = PopupHitTest(GET_Y_LPARAM(lp));
+        const int idx = PopupHitTest(items, GET_Y_LPARAM(lp));
         if (idx < 0) return 0;
-        const UINT cmdId = g_popItems[idx].cmdId;
-        if (cmdId == kNavSources)  { PopupNavigateTo(hwnd, PopView::Sources);  return 0; }
-        if (cmdId == kNavMonitors) { PopupNavigateTo(hwnd, PopView::Monitors); return 0; }
-        if (cmdId == kNavDisplayMode) { PopupNavigateTo(hwnd, PopView::DisplayMode); return 0; }
-        if (cmdId == kNavTransparency) { PopupNavigateTo(hwnd, PopView::Transparency); return 0; }
-        if (cmdId == kNavBack)     { PopupNavigateTo(hwnd, PopView::Root);     return 0; }
+        const UINT cmdId = items[idx].cmdId;
+        if (isChild) {
+            // Click inside the flyout: execute command and close everything.
+            PostMessageW(g_popParent, WM_COMMAND, cmdId, 0);
+            DestroyWindow(g_popHwnd);
+            return 0;
+        }
+        // Click in main (root) menu.
+        if (items[idx].type == PItemType::NavItem) {
+            if (idx == g_popActiveNavIdx) {
+                // Second click on the same nav item toggles the flyout off.
+                PopupCloseFlyout();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            } else {
+                const UINT ncId = items[idx].cmdId;
+                PopView flyView = PopView::Sources;
+                if (ncId == kNavMonitors)          flyView = PopView::Monitors;
+                else if (ncId == kNavDisplayMode)  flyView = PopView::DisplayMode;
+                else if (ncId == kNavTransparency) flyView = PopView::Transparency;
+                PopupOpenFlyout(hwnd, idx, flyView);
+            }
+            return 0;
+        }
+        PopupCloseFlyout();
         PostMessageW(g_popParent, WM_COMMAND, cmdId, 0);
         DestroyWindow(hwnd);
         return 0;
     }
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
-            if (g_popView != PopView::Root) PopupNavigateTo(hwnd, PopView::Root);
-            else DestroyWindow(hwnd);
+            if (g_popChildHwnd && IsWindow(g_popChildHwnd)) {
+                PopupCloseFlyout();
+                if (g_popHwnd && IsWindow(g_popHwnd)) InvalidateRect(g_popHwnd, nullptr, FALSE);
+            } else {
+                DestroyWindow(g_popHwnd);
+            }
         }
         return 0;
     case WM_ACTIVATE:
-        if (LOWORD(wp) == WA_INACTIVE) DestroyWindow(hwnd);
+        if (LOWORD(wp) == WA_INACTIVE) {
+            // Child has WS_EX_NOACTIVATE so clicking it never deactivates the parent;
+            // any other deactivation means the user clicked away — close everything.
+            HWND toActivate = (HWND)lp;
+            if (toActivate != g_popChildHwnd)
+                DestroyWindow(g_popHwnd);
+        }
         return 0;
     case WM_DESTROY:
-        PopupDestroyList();
-        g_popHwnd = nullptr;
-        if (g_popFont)    { DeleteObject(g_popFont);    g_popFont    = nullptr; }
-        if (g_popFontHdr) { DeleteObject(g_popFontHdr); g_popFontHdr = nullptr; }
+        if (isChild) {
+            PopupDestroyList();
+            g_popChildItems.clear();
+            g_popChildHwnd    = nullptr;
+            g_popActiveNavIdx = -1;
+        } else {
+            if (g_popChildHwnd && IsWindow(g_popChildHwnd))
+                DestroyWindow(g_popChildHwnd);
+            g_popHwnd = nullptr;
+            if (g_popFont)    { DeleteObject(g_popFont);    g_popFont    = nullptr; }
+            if (g_popFontHdr) { DeleteObject(g_popFontHdr); g_popFontHdr = nullptr; }
+        }
         return 0;
     case WM_CTLCOLORLISTBOX: {
         if (!g_popListBrush) g_popListBrush = CreateSolidBrush(kPC_Bg);
@@ -1115,7 +1206,7 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const int sel = (int)SendMessageW(g_popList, LB_GETCURSEL, 0, 0);
             if (sel != LB_ERR && !g_state.sourceWindows.empty()) {
                 PostMessageW(g_popParent, WM_COMMAND, kSourceMenuBase + (UINT)sel, 0);
-                DestroyWindow(hwnd);
+                DestroyWindow(g_popHwnd);
             }
         }
         return 0;
@@ -1130,9 +1221,11 @@ void ShowNotchMenu(HWND parentHwnd) {
         return;
     }
 
-    g_popParent = parentHwnd;
-    g_popDpi    = GetDpiForWindow(parentHwnd);
-    g_popView   = PopView::Root;
+    g_popParent       = parentHwnd;
+    g_popDpi          = GetDpiForWindow(parentHwnd);
+    g_popView         = PopView::Root;
+    g_popActiveNavIdx = -1;
+    g_popChildHwnd    = nullptr;
 
     // Build DPI-scaled fonts
     const int dpi = GetDpiForWindow(parentHwnd);
@@ -1170,7 +1263,7 @@ void ShowNotchMenu(HWND parentHwnd) {
         sep();
         add(PItemType::Label,   L"Exit",                  kMenuExit);
     }
-    PopupLayout();
+    PopupLayout(g_popItems);
     const int initW = PopupWidthForView(PopView::Root);
     const int initH = g_popItems.back().y + g_popItems.back().h + 8;
 
@@ -1597,7 +1690,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 }
             }
             // Animate slide
-            const int step = std::max(1, notchH / 12); // ~12 frames to travel full height
+            const int step = std::max(2, notchH / 6); // ~6 frames to travel full height
             if (g_state.notchState == NotchState::Hiding) {
                 g_state.notchOffsetY = std::min(hiddenY, g_state.notchOffsetY + step);
                 if (g_state.notchOffsetY >= hiddenY) {
