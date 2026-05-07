@@ -788,7 +788,7 @@ void DrawNotch(HDC paintDc) {
 
         // Build a small Segoe UI font scaled to notch height
         LOGFONTW lf{};
-        lf.lfHeight  = -(g_state.notchRect.bottom - g_state.notchRect.top - 8);
+        lf.lfHeight  = -(g_state.notchRect.bottom - g_state.notchRect.top - MulDiv(8, notchDpi, 96));
         lf.lfWeight  = FW_MEDIUM;
         lf.lfQuality = CLEARTYPE_QUALITY;
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
