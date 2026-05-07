@@ -624,13 +624,17 @@ void UpdateNotchRect(HWND hwnd) {
     RECT client{};
     GetClientRect(hwnd, &client);
 
+    const UINT dpi = GetDpiForWindow(hwnd);
+    const int scaledW = MulDiv(kNotchWidth,  dpi, 96);
+    const int scaledH = MulDiv(kNotchHeight, dpi, 96);
+
     const int width = client.right - client.left;
-    const int x = std::max(0, (width - kNotchWidth) / 2);
+    const int x = std::max(0, (width - scaledW) / 2);
 
     g_state.notchRect.left = x;
     g_state.notchRect.top = 0;
-    g_state.notchRect.right = x + kNotchWidth;
-    g_state.notchRect.bottom = kNotchHeight;
+    g_state.notchRect.right = x + scaledW;
+    g_state.notchRect.bottom = scaledH;
 }
 
 void ApplyTargetMonitorPlacement() {
@@ -738,7 +742,9 @@ void DrawNotch(HDC paintDc) {
 
     // Soft drop-shadow: draw a slightly larger, darker, semi-blurred pill underneath.
     // GDI has no alpha blend for shapes, so approximate with two offset fills.
-    const int shadowBlur = 4;
+    const HWND notchHwnd = g_state.window;
+    const UINT notchDpi  = notchHwnd ? GetDpiForWindow(notchHwnd) : 96;
+    const int shadowBlur = MulDiv(4, notchDpi, 96);
     for (int i = shadowBlur; i >= 1; --i) {
         RECT sr = r;
         InflateRect(&sr, i, i);
@@ -950,6 +956,8 @@ static void PopupNavigateTo(HWND hwnd, PopView view) {
         addLabel(L"Zoom Out",   kMenuZoomOut);
         addLabel(L"Reset Zoom", kMenuResetZoom);
         addSep();
+        addLabel(L"Mirror Foreground Window", kTrayMenuMirrorForeground);
+        addSep();
         addNav(L"Select Source Window",  kNavSources);
         addNav(L"Select Target Monitor", kNavMonitors);
         addNav(L"Display Mode", kNavDisplayMode);
@@ -1142,8 +1150,12 @@ void ShowNotchMenu(HWND parentHwnd) {
         add(PItemType::Label,   L"Zoom Out",              kMenuZoomOut);
         add(PItemType::Label,   L"Reset Zoom",            kMenuResetZoom);
         sep();
+        add(PItemType::Label,   L"Mirror Foreground Window", kTrayMenuMirrorForeground);
+        sep();
         add(PItemType::NavItem, L"Select Source Window",  kNavSources);
         add(PItemType::NavItem, L"Select Target Monitor", kNavMonitors);
+        add(PItemType::NavItem, L"Display Mode",          kNavDisplayMode);
+        add(PItemType::NavItem, L"Transparency",          kNavTransparency);
         sep();
         add(PItemType::Label,   L"Exit",                  kMenuExit);
     }
