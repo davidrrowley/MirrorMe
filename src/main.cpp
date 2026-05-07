@@ -138,6 +138,10 @@ static HWND               g_popParent     = nullptr;
 static HFONT              g_popFont       = nullptr;
 static HFONT              g_popFontHdr    = nullptr;
 static HBRUSH             g_popListBrush  = nullptr;
+static UINT               g_popDpi        = 96;
+
+// Scale a 96-DPI pixel constant to the current popup DPI.
+static int PopScale(int px) { return MulDiv(px, (int)g_popDpi, 96); }
 
 // Nav virtual command IDs (never forwarded to main window)
 constexpr UINT kNavSources  = 2001;
@@ -806,7 +810,8 @@ void DrawNotch(HDC paintDc) {
 static void PopupNavigateTo(HWND hwnd, PopView view);
 
 static int PopupWidthForView(PopView view) {
-    return (view == PopView::Root) ? kPopW : (kPopW * 9) / 4;
+    const int scaledW = PopScale(kPopW);
+    return (view == PopView::Root) ? scaledW : (scaledW * 9) / 4;
 }
 
 static POINT PopupAnchorBelowNotch(HWND parentHwnd) {
@@ -829,10 +834,10 @@ static POINT PopupClampToMonitor(const POINT& desiredTopLeft, int width, int hei
 }
 
 static void PopupLayout() {
-    int y = 8;
+    int y = PopScale(8);
     for (auto& it : g_popItems) {
         it.y = y;
-        it.h = (it.type == PItemType::Separator) ? kPopSepH : kPopItemH;
+        it.h = (it.type == PItemType::Separator) ? PopScale(kPopSepH) : PopScale(kPopItemH);
         y += it.h;
     }
 }
@@ -848,6 +853,9 @@ static int PopupHitTest(int my) {
 
 static void PopupPaintItems(HDC dc) {
     const int popW = PopupWidthForView(g_popView);
+    const int padL  = PopScale(kPopPadL);
+    const int arrowW = PopScale(28);
+    const int arrowR = PopScale(8);
     for (int i = 0; i < (int)g_popItems.size(); ++i) {
         const auto& it = g_popItems[i];
 
@@ -855,8 +863,8 @@ static void PopupPaintItems(HDC dc) {
             HPEN sp = CreatePen(PS_SOLID, 1, kPC_Sep);
             HGDIOBJ op = SelectObject(dc, sp);
             const int my = it.y + it.h / 2;
-            MoveToEx(dc, 10, my, nullptr);
-            LineTo(dc, popW - 10, my);
+            MoveToEx(dc, PopScale(10), my, nullptr);
+            LineTo(dc, popW - PopScale(10), my);
             SelectObject(dc, op);
             DeleteObject(sp);
             continue;
@@ -867,7 +875,7 @@ static void PopupPaintItems(HDC dc) {
             HBRUSH hb = CreateSolidBrush(kPC_Hover);
             HPEN   hp = CreatePen(PS_NULL, 0, 0);
             HGDIOBJ op = SelectObject(dc, hp), ob = SelectObject(dc, hb);
-            RoundRect(dc, 4, it.y + 1, popW - 4, it.y + it.h - 1, 6, 6);
+            RoundRect(dc, PopScale(4), it.y + 1, popW - PopScale(4), it.y + it.h - 1, PopScale(6), PopScale(6));
             SelectObject(dc, op); SelectObject(dc, ob);
             DeleteObject(hb); DeleteObject(hp);
         }
@@ -877,7 +885,7 @@ static void PopupPaintItems(HDC dc) {
         if (it.type == PItemType::BackItem) {
             SetTextColor(dc, hov ? kPC_Text : kPC_Dim);
             HGDIOBJ of = SelectObject(dc, g_popFontHdr);
-            RECT tr{ kPopPadL, it.y, popW, it.y + it.h };
+            RECT tr{ padL, it.y, popW, it.y + it.h };
             DrawTextW(dc, L"\u2190  Back", -1, &tr, DT_VCENTER | DT_SINGLELINE);
             SelectObject(dc, of);
             continue;
@@ -886,10 +894,12 @@ static void PopupPaintItems(HDC dc) {
         // Label or NavItem
         SetTextColor(dc, it.accent ? kPC_Accent : kPC_Text);
         HGDIOBJ of = SelectObject(dc, g_popFont);
-        RECT tr{ kPopPadL, it.y, popW - kPopPadL, it.y + it.h };
+        // For nav items leave room for the arrow glyph; for labels use full width.
+        const int textRight = (it.type == PItemType::NavItem) ? (popW - arrowW - arrowR) : (popW - padL);
+        RECT tr{ padL, it.y, textRight, it.y + it.h };
         DrawTextW(dc, it.text.c_str(), -1, &tr, DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (it.type == PItemType::NavItem) {
-            RECT cr{ popW - 28, it.y, popW - 8, it.y + it.h };
+            RECT cr{ popW - arrowW, it.y, popW - arrowR, it.y + it.h };
             SetTextColor(dc, kPC_Dim);
             DrawTextW(dc, L"\u203a", -1, &cr, DT_VCENTER | DT_SINGLELINE | DT_RIGHT);
         }
@@ -908,7 +918,7 @@ static void PopupCreateList(HWND hwnd) {
     const int popW = PopupWidthForView(g_popView);
     const int srcCount = (int)g_state.sourceWindows.size();
     const int visRows  = std::min(std::max(srcCount, 1), kPopMaxRows);
-    g_popListH = visRows * kPopListItemH;
+    g_popListH = visRows * PopScale(kPopListItemH);
 
     const int lastItemBottom = g_popItems.empty() ? 8
         : g_popItems.back().y + g_popItems.back().h;
@@ -919,7 +929,7 @@ static void PopupCreateList(HWND hwnd) {
         LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
         0, g_popListY, popW, g_popListH,
         hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(g_popList, LB_SETITEMHEIGHT, 0, kPopListItemH);
+    SendMessageW(g_popList, LB_SETITEMHEIGHT, 0, PopScale(kPopListItemH));
     if (srcCount == 0) {
         SendMessageW(g_popList, LB_ADDSTRING, 0, (LPARAM)L"No visible windows");
     } else {
@@ -1077,7 +1087,7 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MEASUREITEM: {
         auto* mi = reinterpret_cast<MEASUREITEMSTRUCT*>(lp);
-        mi->itemHeight = kPopListItemH;
+        mi->itemHeight = PopScale(kPopListItemH);
         return TRUE;
     }
     case WM_DRAWITEM: {
@@ -1121,6 +1131,7 @@ void ShowNotchMenu(HWND parentHwnd) {
     }
 
     g_popParent = parentHwnd;
+    g_popDpi    = GetDpiForWindow(parentHwnd);
     g_popView   = PopView::Root;
 
     // Build DPI-scaled fonts
