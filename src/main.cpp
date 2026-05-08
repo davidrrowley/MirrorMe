@@ -74,8 +74,17 @@ constexpr UINT kMonitorMenuBase = 30000;
 constexpr UINT kTrayIconId = 1;
 constexpr UINT kTrayCallbackMsg = WM_APP + 10;
 
-constexpr int kNotchWidth = 140;
+constexpr int kNotchWidth  = 180;  // wider to accommodate dot-grid handles
 constexpr int kNotchHeight = 28;
+
+// Horizontal (DevBox-style) bar menu layout
+constexpr int kPopBarH    = 72;   // total bar height at 96 DPI
+constexpr int kPopItemW   = 68;   // width per button at 96 DPI
+constexpr int kPopSepW    = 14;   // separator column width at 96 DPI
+constexpr int kPopBarPad  = 8;    // left/right padding at 96 DPI
+constexpr int kPopIconH   = 28;   // icon area height at 96 DPI
+constexpr int kPopLabelH  = 16;   // label area height at 96 DPI
+constexpr int kPopIconPtSz = 16;  // icon font size in pt
 
 struct WindowEntry {
     HWND hwnd = nullptr;
@@ -122,9 +131,11 @@ enum class PItemType { Label, NavItem, BackItem, Separator };
 struct PItem {
     PItemType    type   = PItemType::Label;
     std::wstring text;
+    std::wstring icon;          // Segoe MDL2 Assets glyph (may be empty)
     UINT         cmdId  = 0;
     bool         accent = false;
-    int          y = 0, h = 0;
+    int          x = 0, w = 0; // horizontal layout (main bar)
+    int          y = 0, h = 0; // vertical layout (flyout child)
 };
 enum class PopView { Root, Sources, Monitors, Transparency, DisplayMode };
 static std::vector<PItem> g_popItems;
@@ -137,6 +148,7 @@ static HWND               g_popList       = nullptr;
 static HWND               g_popParent     = nullptr;
 static HFONT              g_popFont       = nullptr;
 static HFONT              g_popFontHdr    = nullptr;
+static HFONT              g_popIconFont   = nullptr;
 static HBRUSH             g_popListBrush  = nullptr;
 static UINT               g_popDpi        = 96;
 
@@ -784,31 +796,63 @@ void DrawNotch(HDC paintDc) {
     DeleteObject(bg);
     DeleteObject(np);
 
-    // Only draw label text when notch is meaningfully visible
+    // Only draw contents when notch is meaningfully visible
     if (g_state.notchOffsetY < (g_state.notchRect.bottom - g_state.notchRect.top) * 3 / 4) {
-        // Clip to pill so text doesn't bleed outside
+        // Clip to pill
         HRGN rgn = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, radius, radius);
         SelectClipRgn(paintDc, rgn);
         DeleteObject(rgn);
 
-        SetBkMode(paintDc, TRANSPARENT);
-        SetTextColor(paintDc, RGB(210, 210, 210));
+        const int W  = r.right - r.left;
+        const int H  = r.bottom - r.top;
+        const int cx = r.left + W / 2;
+        const int cy = r.top  + H / 2;
 
-        // Build a small Segoe UI font scaled to notch height
-        LOGFONTW lf{};
-        lf.lfHeight  = -((g_state.notchRect.bottom - g_state.notchRect.top - MulDiv(8, notchDpi, 96)) * 6 / 10);
-        lf.lfWeight  = FW_MEDIUM;
-        lf.lfQuality = CLEARTYPE_QUALITY;
-        wcscpy_s(lf.lfFaceName, L"Segoe UI");
-        HFONT font = CreateFontIndirectW(&lf);
-        HGDIOBJ oldFont = SelectObject(paintDc, font);
+        // ── Dot grids: 3 cols × 2 rows on each side ──────────────────────
+        // Dot diameter and spacing (centre-to-centre)
+        const int dotD    = MulDiv(4, notchDpi, 96);
+        const int dotGapX = MulDiv(6, notchDpi, 96);
+        const int dotGapY = MulDiv(6, notchDpi, 96);
+        // Physical grid size: (cols-1)*gapX + dotD wide, (rows-1)*gapY + dotD tall
+        const int gridW   = 2 * dotGapX + dotD;   // 3 cols
+        const int gridH   = 1 * dotGapY + dotD;   // 2 rows
+        const int inset   = MulDiv(16, notchDpi, 96); // from pill edge to grid left
+        const int gridTopY = cy - gridH / 2;
 
-        RECT tr = r;
-        DrawTextW(paintDc, L"MirrorMe", -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        HBRUSH dotBrush = CreateSolidBrush(RGB(130, 130, 145));
+        HPEN   dotPen   = CreatePen(PS_NULL, 0, 0);
+        HGDIOBJ odp = SelectObject(paintDc, dotPen);
+        HGDIOBJ odb = SelectObject(paintDc, dotBrush);
 
-        SelectObject(paintDc, oldFont);
-        DeleteObject(font);
-        SelectClipRgn(paintDc, nullptr); // remove clip
+        // Left grid and right grid
+        const int gridStartX[2] = { r.left + inset, r.right - inset - gridW };
+        for (int g = 0; g < 2; ++g) {
+            for (int col = 0; col < 3; ++col) {
+                for (int row = 0; row < 2; ++row) {
+                    const int dx = gridStartX[g] + col * dotGapX;
+                    const int dy = gridTopY + row * dotGapY;
+                    Ellipse(paintDc, dx, dy, dx + dotD, dy + dotD);
+                }
+            }
+        }
+        SelectObject(paintDc, odp);
+        SelectObject(paintDc, odb);
+        DeleteObject(dotBrush);
+        DeleteObject(dotPen);
+
+        // ── Chevron (∨) centred between the grids ─────────────────────────
+        const int chevW  = MulDiv(10, notchDpi, 96);
+        const int chevH  = MulDiv(5,  notchDpi, 96);
+        const int chevPW = MulDiv(2,  notchDpi, 96); // pen width
+        HPEN chevPen = CreatePen(PS_SOLID, chevPW, RGB(200, 200, 215));
+        HGDIOBJ ocp  = SelectObject(paintDc, chevPen);
+        MoveToEx(paintDc, cx - chevW / 2, cy - chevH / 2, nullptr);
+        LineTo(paintDc,   cx,             cy + chevH / 2);
+        LineTo(paintDc,   cx + chevW / 2, cy - chevH / 2);
+        SelectObject(paintDc, ocp);
+        DeleteObject(chevPen);
+
+        SelectClipRgn(paintDc, nullptr);
     }
 }
 
@@ -857,6 +901,98 @@ static int PopupHitTest(const std::vector<PItem>& items, int my) {
             if (my >= it.y && my < it.y + it.h) return i;
     }
     return -1;
+}
+
+// ── Horizontal bar helpers (main DevBox-style popup) ──────────────────────
+
+static void PopupLayoutH(std::vector<PItem>& items) {
+    int x = PopScale(kPopBarPad);
+    for (auto& it : items) {
+        it.x = x;
+        it.w = (it.type == PItemType::Separator) ? PopScale(kPopSepW) : PopScale(kPopItemW);
+        x += it.w;
+    }
+}
+
+static int PopupTotalWidth(const std::vector<PItem>& items) {
+    if (items.empty()) return PopScale(kPopBarPad) * 2;
+    const auto& last = items.back();
+    return last.x + last.w + PopScale(kPopBarPad);
+}
+
+static int PopupHitTestH(const std::vector<PItem>& items, int mx) {
+    for (int i = 0; i < (int)items.size(); ++i) {
+        const auto& it = items[i];
+        if (it.type != PItemType::Separator)
+            if (mx >= it.x && mx < it.x + it.w) return i;
+    }
+    return -1;
+}
+
+// Paint items in the horizontal DevBox-style bar.
+// iconFont must already be created by the caller.
+static void PopupPaintItemsH(HDC dc, const std::vector<PItem>& items, int hover,
+                              int activeNavIdx, HFONT labelFont, HFONT iconFont) {
+    const int barH   = PopScale(kPopBarH);
+    // Vertical zones within the bar
+    const int iconY  = PopScale(10);
+    const int iconH  = PopScale(kPopIconH);
+    const int lblY   = iconY + iconH + PopScale(2);
+    const int lblH   = PopScale(kPopLabelH);
+
+    // 1. Hover backgrounds
+    for (int i = 0; i < (int)items.size(); ++i) {
+        const auto& it = items[i];
+        if (it.type == PItemType::Separator) continue;
+        if (i != hover && i != activeNavIdx) continue;
+        HBRUSH hb = CreateSolidBrush(kPC_Hover);
+        HPEN   hp = CreatePen(PS_NULL, 0, 0);
+        HGDIOBJ op = SelectObject(dc, hp), ob = SelectObject(dc, hb);
+        const int rr = PopScale(6);
+        RoundRect(dc, it.x + PopScale(2), PopScale(4),
+                      it.x + it.w - PopScale(2), barH - PopScale(4), rr, rr);
+        SelectObject(dc, op); SelectObject(dc, ob);
+        DeleteObject(hb); DeleteObject(hp);
+    }
+
+    // 2. Vertical separators
+    for (const auto& it : items) {
+        if (it.type != PItemType::Separator) continue;
+        HPEN sp = CreatePen(PS_SOLID, 1, kPC_Sep);
+        HGDIOBJ op = SelectObject(dc, sp);
+        const int mx = it.x + it.w / 2;
+        MoveToEx(dc, mx, PopScale(12), nullptr);
+        LineTo(dc, mx, barH - PopScale(12));
+        SelectObject(dc, op);
+        DeleteObject(sp);
+    }
+
+    // 3. Icons and labels
+    SetBkMode(dc, TRANSPARENT);
+    for (int i = 0; i < (int)items.size(); ++i) {
+        const auto& it = items[i];
+        if (it.type == PItemType::Separator) continue;
+        const bool hov = (i == hover) || (i == activeNavIdx);
+        const COLORREF col = it.accent ? kPC_Accent
+                           : hov      ? kPC_Text
+                                      : RGB(175, 175, 185);
+        SetTextColor(dc, col);
+
+        if (!it.icon.empty() && iconFont) {
+            HGDIOBJ of = SelectObject(dc, iconFont);
+            RECT ir{ it.x, iconY, it.x + it.w, iconY + iconH };
+            DrawTextW(dc, it.icon.c_str(), -1, &ir, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, of);
+        }
+
+        if (labelFont) {
+            HGDIOBJ of = SelectObject(dc, labelFont);
+            RECT lr{ it.x + PopScale(2), lblY, it.x + it.w - PopScale(2), lblY + lblH };
+            DrawTextW(dc, it.text.c_str(), -1, &lr,
+                      DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(dc, of);
+        }
+    }
 }
 
 static void PopupPaintItems(HDC dc, const std::vector<PItem>& items, int hover,
@@ -1011,10 +1147,12 @@ static void PopupOpenFlyout(HWND parentHwnd, int navItemIdx, PopView view) {
         ? itemsH + srcRows * PopScale(kPopListItemH) + PopScale(8)
         : itemsH;
 
-    // Position to the right of the parent popup, aligned to the nav item's top
-    POINT navPt = { PopupWidthForView(PopView::Root), g_popItems[navItemIdx].y };
+    // Position below the specific nav item column (centred on that column)
+    const int colCx = g_popItems[navItemIdx].x + g_popItems[navItemIdx].w / 2;
+    const int barBottom = PopScale(kPopBarH);
+    POINT navPt = { colCx - childW / 2, barBottom };
     ClientToScreen(g_popHwnd, &navPt);
-    const POINT desired = { navPt.x + PopScale(4), navPt.y };
+    const POINT desired = { navPt.x, navPt.y + PopScale(4) };
     const POINT pos = PopupClampToMonitor(desired, childW, estimatedH);
 
     g_popChildHwnd = CreateWindowExW(
@@ -1061,18 +1199,24 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HGDIOBJ old = SelectObject(mem, bmp);
         HBRUSH bgBr = CreateSolidBrush(kPC_Bg);
         FillRect(mem, &cl, bgBr); DeleteObject(bgBr);
-        PopupPaintItems(mem, items, hover, view, isChild ? -1 : g_popActiveNavIdx);
+        if (!isChild) {
+            PopupPaintItemsH(mem, items, hover, g_popActiveNavIdx, g_popFont, g_popIconFont);
+        } else {
+            PopupPaintItems(mem, items, hover, view, -1);
+        }
         BitBlt(hdc, 0, 0, cl.right, cl.bottom, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
         EndPaint(hwnd, &ps);
         return 0;
     }
     case WM_MOUSEMOVE: {
-        const int newHov = PopupHitTest(items, GET_Y_LPARAM(lp));
+        const int newHov = isChild
+            ? PopupHitTest(items, GET_Y_LPARAM(lp))
+            : PopupHitTestH(items, GET_X_LPARAM(lp));
         if (newHov != hover) {
             hover = newHov;
             if (!isChild) {
-                // Hovering a nav item opens its flyout; a regular item closes it.
+                // Hovering a nav item opens its flyout; hovering elsewhere closes it.
                 if (newHov >= 0 && items[newHov].type == PItemType::NavItem) {
                     if (newHov != g_popActiveNavIdx) {
                         const UINT cmdId = items[newHov].cmdId;
@@ -1107,7 +1251,9 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     case WM_LBUTTONDOWN: {
-        const int idx = PopupHitTest(items, GET_Y_LPARAM(lp));
+        const int idx = isChild
+            ? PopupHitTest(items, GET_Y_LPARAM(lp))
+            : PopupHitTestH(items, GET_X_LPARAM(lp));
         if (idx < 0) return 0;
         const UINT cmdId = items[idx].cmdId;
         if (isChild) {
@@ -1116,7 +1262,7 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(g_popHwnd);
             return 0;
         }
-        // Click in main (root) menu.
+        // Click in main (horizontal) bar.
         if (items[idx].type == PItemType::NavItem) {
             if (idx == g_popActiveNavIdx) {
                 // Second click on the same nav item toggles the flyout off.
@@ -1166,8 +1312,9 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_popChildHwnd && IsWindow(g_popChildHwnd))
                 DestroyWindow(g_popChildHwnd);
             g_popHwnd = nullptr;
-            if (g_popFont)    { DeleteObject(g_popFont);    g_popFont    = nullptr; }
-            if (g_popFontHdr) { DeleteObject(g_popFontHdr); g_popFontHdr = nullptr; }
+            if (g_popFont)     { DeleteObject(g_popFont);     g_popFont     = nullptr; }
+            if (g_popFontHdr)  { DeleteObject(g_popFontHdr);  g_popFontHdr  = nullptr; }
+            if (g_popIconFont) { DeleteObject(g_popIconFont); g_popIconFont = nullptr; }
         }
         return 0;
     case WM_CTLCOLORLISTBOX: {
@@ -1231,41 +1378,60 @@ void ShowNotchMenu(HWND parentHwnd) {
     const int dpi = GetDpiForWindow(parentHwnd);
     {
         LOGFONTW lf{};
-        lf.lfHeight  = -MulDiv(10, dpi, 72);
+        // Label font (small, Segoe UI)
+        lf.lfHeight  = -MulDiv(9, dpi, 72);
         lf.lfWeight  = FW_NORMAL;
         lf.lfQuality = CLEARTYPE_QUALITY;
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
         g_popFont    = CreateFontIndirectW(&lf);
+        // Header font used by flyout Back items
         lf.lfHeight  = -MulDiv(8, dpi, 72);
         lf.lfWeight  = FW_SEMIBOLD;
         g_popFontHdr = CreateFontIndirectW(&lf);
+        // Icon font (Segoe MDL2 Assets glyphs)
+        lf.lfHeight  = -MulDiv(kPopIconPtSz, dpi, 72);
+        lf.lfWeight  = FW_NORMAL;
+        wcscpy_s(lf.lfFaceName, L"Segoe MDL2 Assets");
+        g_popIconFont = CreateFontIndirectW(&lf);
     }
 
-    // Build root items for initial height measurement
+    // Build horizontal bar items (icon glyph + short label + command id)
+    // Icons are Segoe MDL2 Assets code points — adjust as desired.
     g_popItems.clear();
     g_popHover = -1;
     g_popListH = 0;
     {
-        auto add = [](PItemType t, const wchar_t* text, UINT id) {
-            g_popItems.push_back({ t, text, id });
+        auto add = [](PItemType t, const wchar_t* text, UINT id, const wchar_t* icon) {
+            PItem it;
+            it.type  = t;
+            it.text  = text;
+            it.icon  = icon;
+            it.cmdId = id;
+            g_popItems.push_back(std::move(it));
         };
-        auto sep = []() { g_popItems.push_back({ PItemType::Separator }); };
-        add(PItemType::Label,   L"Zoom In",               kMenuZoomIn);
-        add(PItemType::Label,   L"Zoom Out",              kMenuZoomOut);
-        add(PItemType::Label,   L"Reset Zoom",            kMenuResetZoom);
+        auto sep = []() {
+            PItem it;
+            it.type = PItemType::Separator;
+            g_popItems.push_back(std::move(it));
+        };
+        // Group 1 — zoom & mirror
+        add(PItemType::Label,   L"Zoom In",  kMenuZoomIn,              L"\uE8A3"); // ZoomIn
+        add(PItemType::Label,   L"Zoom Out", kMenuZoomOut,             L"\uE71F"); // ZoomOut
+        add(PItemType::Label,   L"Reset",    kMenuResetZoom,           L"\uE72C"); // Refresh
+        add(PItemType::Label,   L"Mirror",   kTrayMenuMirrorForeground, L"\uE8AB"); // SwitchApps
         sep();
-        add(PItemType::Label,   L"Mirror Foreground Window", kTrayMenuMirrorForeground);
+        // Group 2 — source, monitor, display, opacity
+        add(PItemType::NavItem, L"Source",   kNavSources,              L"\uE737"); // AllApps
+        add(PItemType::NavItem, L"Monitor",  kNavMonitors,             L"\uE7F4"); // TVMonitor
+        add(PItemType::NavItem, L"Display",  kNavDisplayMode,          L"\uE7C4"); // DisplayExternalMirrored
+        add(PItemType::NavItem, L"Opacity",  kNavTransparency,         L"\uEB9D"); // Brightness
         sep();
-        add(PItemType::NavItem, L"Select Source Window",  kNavSources);
-        add(PItemType::NavItem, L"Select Target Monitor", kNavMonitors);
-        add(PItemType::NavItem, L"Display Mode",          kNavDisplayMode);
-        add(PItemType::NavItem, L"Transparency",          kNavTransparency);
-        sep();
-        add(PItemType::Label,   L"Exit",                  kMenuExit);
+        // Group 3 — exit
+        add(PItemType::Label,   L"Exit",     kMenuExit,                L"\uE8BB"); // Leave
     }
-    PopupLayout(g_popItems);
-    const int initW = PopupWidthForView(PopView::Root);
-    const int initH = g_popItems.back().y + g_popItems.back().h + 8;
+    PopupLayoutH(g_popItems);
+    const int initW = PopupTotalWidth(g_popItems);
+    const int initH = PopScale(kPopBarH);
 
     // Register window class once
     static bool s_classReg = false;
