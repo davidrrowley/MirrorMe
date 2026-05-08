@@ -33,7 +33,7 @@ using namespace winrt::Windows::Graphics::DirectX;
 using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
 constexpr wchar_t kWindowClassName[] = L"MirrorMeMainWindow";
-constexpr wchar_t kAppVersion[]      = L"1.1.0";
+constexpr wchar_t kAppVersion[]      = L"1.1.1";
 constexpr wchar_t kWindowTitle[] = L"MirrorMe";
 
 constexpr UINT_PTR kFrameTimerId = 1;
@@ -69,7 +69,7 @@ constexpr int  kHotkeyMirrorForegroundAltId = 5;
 constexpr int  kHotkeyResetZoomAltId = 6;
 constexpr UINT kTrayMenuToggleVisibility = 1101;
 constexpr UINT kTrayMenuExit = 1102;
-constexpr UINT kTrayMenuStartMinimized = 1104;
+
 constexpr UINT kTrayMenuMirrorForeground = 1105;
 constexpr UINT kTrayMenuAbout    = 1106;
 constexpr UINT kMenuAnnotate     = 1005;
@@ -81,7 +81,8 @@ constexpr int  kHotkeyAnnotateId = 7;
 constexpr UINT kSourceMenuBase = 20000;
 constexpr UINT kMonitorMenuBase = 30000;
 constexpr UINT kTrayIconId = 1;
-constexpr UINT kTrayCallbackMsg = WM_APP + 10;
+constexpr UINT kTrayCallbackMsg  = WM_APP + 10;
+constexpr UINT kFirstRunPeekMsg  = WM_APP + 11;
 
 constexpr int kNotchWidth  = 180;  // wider to accommodate dot-grid handles
 constexpr int kNotchHeight = 28;
@@ -131,7 +132,8 @@ struct AppState {
 AppState g_state;
 static bool g_appExiting = false;
 static UINT g_taskbarCreatedMsg = 0;
-static bool g_startMinimizedToTray = false;
+
+static bool g_firstRunPeek         = false;
 static DisplayMode g_displayMode = DisplayMode::ForegroundExclusive;
 
 // ── Annotation state ─────────────────────────────────────────────────────────
@@ -1736,8 +1738,6 @@ static std::wstring SettingsIniPath() {
 
 static void LoadSettings() {
     const std::wstring iniPath = SettingsIniPath();
-    g_startMinimizedToTray = GetPrivateProfileIntW(
-        L"MirrorMe", L"StartMinimizedToTray", 0, iniPath.c_str()) != 0;
     g_displayMode = GetPrivateProfileIntW(
         L"MirrorMe", L"ForegroundExclusive", 1, iniPath.c_str()) != 0
         ? DisplayMode::ForegroundExclusive
@@ -1745,13 +1745,17 @@ static void LoadSettings() {
     const int opacity = static_cast<int>(GetPrivateProfileIntW(
         L"MirrorMe", L"OpacityPercent", 100, iniPath.c_str()));
     g_state.opacityPercent = std::max(0, std::min(100, opacity));
+    // First-run flag: present (or 1) means we haven't shown the peek yet.
+    const bool firstRun = GetPrivateProfileIntW(
+        L"MirrorMe", L"FirstRun", 1, iniPath.c_str()) != 0;
+    if (firstRun) {
+        g_firstRunPeek = true;
+        WritePrivateProfileStringW(L"MirrorMe", L"FirstRun", L"0", iniPath.c_str());
+    }
 }
 
 static void SaveSettings() {
     const std::wstring iniPath = SettingsIniPath();
-    WritePrivateProfileStringW(
-        L"MirrorMe", L"StartMinimizedToTray",
-        g_startMinimizedToTray ? L"1" : L"0", iniPath.c_str());
     WritePrivateProfileStringW(
         L"MirrorMe", L"ForegroundExclusive",
         (g_displayMode == DisplayMode::ForegroundExclusive) ? L"1" : L"0", iniPath.c_str());
@@ -1804,6 +1808,21 @@ static void AddTrayIcon(HWND hwnd) {
     if (Shell_NotifyIconW(NIM_ADD, &nid)) {
         nid.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &nid);
+
+        if (g_firstRunPeek) {
+            // First run: show a balloon so the user knows where the icon lives.
+            NOTIFYICONDATAW balloon{};
+            balloon.cbSize    = sizeof(balloon);
+            balloon.hWnd      = hwnd;
+            balloon.uID       = kTrayIconId;
+            balloon.uFlags    = NIF_INFO;
+            balloon.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
+            wcsncpy_s(balloon.szInfoTitle, L"MirrorMe is running", _TRUNCATE);
+            wcsncpy_s(balloon.szInfo,
+                L"Right-click the tray icon to pick a window to mirror.",
+                _TRUNCATE);
+            Shell_NotifyIconW(NIM_MODIFY, &balloon);
+        }
     }
 }
 
@@ -1890,10 +1909,6 @@ static void ShowTrayContextMenu(HWND hwnd) {
 
     const wchar_t* toggleLabel = IsWindowVisible(hwnd) ? L"Hide MirrorMe" : L"Show MirrorMe";
     AppendMenuW(root, MF_STRING, kTrayMenuToggleVisibility, toggleLabel);
-    AppendMenuW(root,
-        MF_STRING | (g_startMinimizedToTray ? MF_CHECKED : 0),
-        kTrayMenuStartMinimized,
-        L"Start Minimized To Tray");
     AppendMenuW(root, MF_SEPARATOR, 0, nullptr);
 
     if (g_state.sourceWindows.empty()) {
@@ -2007,10 +2022,6 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         return;
     case kTrayMenuToggleVisibility:
         ToggleMainWindowVisibility(hwnd);
-        return;
-    case kTrayMenuStartMinimized:
-        g_startMinimizedToTray = !g_startMinimizedToTray;
-        SaveSettings();
         return;
     case kDisplayModeForegroundCmd:
         g_displayMode = DisplayMode::ForegroundExclusive;
@@ -2132,7 +2143,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         RegisterHotKey(hwnd, kHotkeyResetZoomAltId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'R');
         RegisterHotKey(hwnd, kHotkeyMirrorForegroundId, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'M');
         RegisterHotKey(hwnd, kHotkeyAnnotateId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'D');
+        if (g_firstRunPeek)
+            PostMessageW(hwnd, kFirstRunPeekMsg, 0, 0);
         return 0;
+
+    case kFirstRunPeekMsg: {
+        // Show just the notch pill at the top-centre of the primary monitor,
+        // without covering the whole screen with the mirror window.
+        HMONITOR hpri = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfoW(hpri, &mi);
+        const RECT& mr = mi.rcMonitor;
+
+        // Place the window briefly at full width on the monitor so
+        // GetDpiForWindow returns the correct per-monitor DPI.
+        SetWindowPos(hwnd, HWND_TOPMOST,
+            mr.left, mr.top, mr.right - mr.left, mr.bottom - mr.top,
+            SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+
+        const UINT dpi    = GetDpiForWindow(hwnd);
+        const int  notchW = MulDiv(kNotchWidth,  dpi, 96);
+        const int  notchH = MulDiv(kNotchHeight, dpi, 96);
+        const int  shadow = MulDiv(4,            dpi, 96); // matches DrawNotch shadow blur
+        const int  winW   = notchW + shadow * 2;
+        const int  winH   = notchH + shadow * 2;
+        const int  winX   = mr.left + (mr.right - mr.left - winW) / 2;
+
+        // Resize to just the notch footprint so the black mirror background
+        // doesn't cover the user's desktop.
+        SetWindowPos(hwnd, HWND_TOPMOST, winX, mr.top, winW, winH,
+            SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+        UpdateNotchRect(hwnd);
+        g_state.notchOffsetY = 0;
+        g_state.notchState   = NotchState::Visible;
+        g_state.notchIdleMs  = 0;
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        return 0;
+    }
 
     case kTrayCallbackMsg: {
         const UINT evt = LOWORD(static_cast<DWORD>(lParam));
@@ -2167,6 +2214,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 if (g_state.notchOffsetY >= hiddenY) {
                     g_state.notchOffsetY = hiddenY;
                     g_state.notchState  = NotchState::Hidden;
+                    if (g_firstRunPeek) {
+                        g_firstRunPeek = false;
+                        ShowWindow(hwnd, SW_HIDE);
+                        // Silently reposition to the intended target monitor
+                        // so the next ShowWindow goes to the right place.
+                        MONITORINFO tmi{ sizeof(tmi) };
+                        if (g_state.targetMonitor &&
+                            GetMonitorInfoW(g_state.targetMonitor, &tmi)) {
+                            const RECT& tr = tmi.rcMonitor;
+                            const bool fe = (g_displayMode == DisplayMode::ForegroundExclusive);
+                            SetWindowPos(hwnd, fe ? HWND_TOPMOST : HWND_BOTTOM,
+                                tr.left, tr.top,
+                                tr.right - tr.left, tr.bottom - tr.top,
+                                SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+                        }
+                    }
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
             } else if (g_state.notchState == NotchState::Showing) {
@@ -2468,8 +2531,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
-    const bool hasSource = (g_state.sourceWindow != nullptr && IsWindow(g_state.sourceWindow));
-    ShowWindow(window, (g_startMinimizedToTray || !hasSource) ? SW_HIDE : SW_SHOW);
+    ShowWindow(window, SW_HIDE);
     UpdateWindow(window);
 
     MSG msg{};

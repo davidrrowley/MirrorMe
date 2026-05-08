@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-05-08
+
+### Changed
+
+- App now always starts minimised to the system tray; removed the redundant "Start Minimised To Tray" toggle
+- First-run experience: balloon notification and notch peek guide new users to the tray icon on first launch
+
 ## [1.1.0] - 2026-05-08
 
 ### Fixed
