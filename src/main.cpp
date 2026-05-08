@@ -139,6 +139,7 @@ struct Stroke {
     std::vector<POINT> points;
     COLORREF            color     = RGB(220, 50, 50);
     int                 thickness = 3;
+    bool                isRect    = false;
 };
 
 constexpr size_t kAnnoteColorCount = 6;
@@ -160,6 +161,7 @@ static const wchar_t* kAnnoteSizeNames[kAnnoteSizeCount]  = { L"Thin", L"Medium"
 
 static bool              g_annotateMode    = false;
 static bool              g_annotateDrawing = false;
+static bool              g_annotateRectDrawing = false;
 static COLORREF          g_annotePenColor  = RGB(220, 50, 50);
 static int               g_annotePenSize   = 3;
 static std::vector<Stroke> g_strokes;
@@ -803,7 +805,20 @@ void DrawMirrorContent(HDC paintDc, const RECT& clientRect) {
 void DrawAnnotations(HDC dc) {
     for (const auto& stroke : g_strokes) {
         if (stroke.points.empty()) continue;
-        if (stroke.points.size() == 1) {
+        if (stroke.isRect) {
+            if (stroke.points.size() < 2) continue;
+            const int x1 = std::min(stroke.points[0].x, stroke.points[1].x);
+            const int y1 = std::min(stroke.points[0].y, stroke.points[1].y);
+            const int x2 = std::max(stroke.points[0].x, stroke.points[1].x);
+            const int y2 = std::max(stroke.points[0].y, stroke.points[1].y);
+            HPEN pen = CreatePen(PS_SOLID, stroke.thickness, stroke.color);
+            HGDIOBJ oldPen   = SelectObject(dc, pen);
+            HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Rectangle(dc, x1, y1, x2, y2);
+            SelectObject(dc, oldPen);
+            SelectObject(dc, oldBrush);
+            DeleteObject(pen);
+        } else if (stroke.points.size() == 1) {
             // Single click — draw a filled dot
             const int r = stroke.thickness / 2 + 1;
             const POINT& p = stroke.points[0];
@@ -2029,6 +2044,10 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
                 g_annotateDrawing = false;
                 ReleaseCapture();
             }
+            if (g_annotateRectDrawing) {
+                g_annotateRectDrawing = false;
+                ReleaseCapture();
+            }
             g_strokes.clear();
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -2077,11 +2096,13 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
 
     if (commandId >= kAnnoPenMenuBase && commandId < kAnnoPenMenuBase + (UINT)kAnnoteColorCount) {
         g_annotePenColor = kAnnoteColors[commandId - kAnnoPenMenuBase];
+        g_annotateMode = true;
         return;
     }
 
     if (commandId >= kAnnoSizeMenuBase && commandId < kAnnoSizeMenuBase + (UINT)kAnnoteSizeCount) {
         g_annotePenSize = kAnnoteSizes[commandId - kAnnoSizeMenuBase];
+        g_annotateMode = true;
         return;
     }
 }
@@ -2236,6 +2257,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (g_annotateDrawing && !g_strokes.empty()) {
             g_strokes.back().points.push_back(cur);
             InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (g_annotateRectDrawing && !g_strokes.empty()) {
+            g_strokes.back().points[1] = cur;
+            InvalidateRect(hwnd, nullptr, FALSE);
         } else if (g_state.dragActive) {
             g_state.panOffset.x = g_state.panAtDragStart.x + (cur.x - g_state.dragStart.x);
             g_state.panOffset.y = g_state.panAtDragStart.y + (cur.y - g_state.dragStart.y);
@@ -2288,6 +2312,34 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return 0;
     }
+
+    case WM_RBUTTONDOWN: {
+        if (g_annotateMode && !g_annotateDrawing) {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT animNotch = g_state.notchRect;
+            OffsetRect(&animNotch, 0, -g_state.notchOffsetY);
+            if (!PtInRect(&animNotch, point)) {
+                Stroke stroke;
+                stroke.color     = g_annotePenColor;
+                stroke.thickness = g_annotePenSize;
+                stroke.isRect    = true;
+                stroke.points.push_back(point);
+                stroke.points.push_back(point);
+                g_strokes.push_back(std::move(stroke));
+                g_annotateRectDrawing = true;
+                SetCapture(hwnd);
+            }
+        }
+        return 0;
+    }
+
+    case WM_RBUTTONUP:
+        if (g_annotateRectDrawing) {
+            g_annotateRectDrawing = false;
+            ReleaseCapture();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
 
     case WM_SETCURSOR:
         if (g_annotateMode && LOWORD(lParam) == HTCLIENT) {

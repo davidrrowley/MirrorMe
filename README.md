@@ -54,7 +54,8 @@ There are plenty of other uses I'm sure, but this tiny tool was created to solve
   - `Ctrl+Alt+0` Reset zoom and pan to 1:1
   - `Ctrl+Alt+R` Reset zoom and pan to 1:1 (alternate)
   - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor; press again to stop mirroring
-  - `Ctrl+Alt+D` Start Drawing
+  - `Ctrl+Alt+D` Start Drawing, holding right mouse and drawing will generate a rectangle.  Selecting Ctrl+Alt+D again will clear any drawing on the screen.
+  
 
 ## Download
 
