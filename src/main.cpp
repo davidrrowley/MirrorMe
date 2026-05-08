@@ -1798,6 +1798,8 @@ static void MirrorForegroundWindowToDefaultMonitor(HWND hwnd) {
         g_wgcCapture.Stop();
         g_state.wgcCaptureActive = false;
         g_state.sourceWindow = nullptr;
+        g_state.zoom = 1.0f;
+        g_state.panOffset = {0, 0};
         ShowWindow(hwnd, SW_HIDE);
         UpdateTrayIcon(hwnd);
         return;
