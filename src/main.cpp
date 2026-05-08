@@ -33,7 +33,7 @@ using namespace winrt::Windows::Graphics::DirectX;
 using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
 constexpr wchar_t kWindowClassName[] = L"MirrorMeMainWindow";
-constexpr wchar_t kAppVersion[]      = L"1.0.4";
+constexpr wchar_t kAppVersion[]      = L"1.0.6";
 constexpr wchar_t kWindowTitle[] = L"MirrorMe";
 
 constexpr UINT_PTR kFrameTimerId = 1;
