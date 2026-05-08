@@ -487,14 +487,14 @@ static bool IsUsableSourceWindow(HWND hwnd) {
     if (hwnd == nullptr || !IsWindow(hwnd) || hwnd == g_state.window) {
         return false;
     }
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+    if (!IsWindowVisible(hwnd)) {
         return false;
     }
     if (IsWindowCloaked(hwnd) || IsShellOrDesktopWindowClass(hwnd)) {
         return false;
     }
     const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    if ((exStyle & WS_EX_TOOLWINDOW) != 0 || (exStyle & WS_EX_NOACTIVATE) != 0) {
+    if ((exStyle & WS_EX_TOOLWINDOW) != 0) {
         return false;
     }
     const HWND owner = GetWindow(hwnd, GW_OWNER);
@@ -518,7 +518,7 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
         return TRUE;
     }
 
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+    if (!IsWindowVisible(hwnd)) {
         return TRUE;
     }
 
@@ -527,7 +527,7 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
     }
 
     const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    if ((exStyle & WS_EX_TOOLWINDOW) != 0 || (exStyle & WS_EX_NOACTIVATE) != 0) {
+    if ((exStyle & WS_EX_TOOLWINDOW) != 0) {
         return TRUE;
     }
 
@@ -1917,7 +1917,13 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         RequestAppExit(hwnd);
         return;
     case kMenuExit:
+        g_wgcCapture.Stop();
+        g_state.wgcCaptureActive = false;
+        g_state.sourceWindow = nullptr;
+        g_state.zoom = 1.0f;
+        g_state.panOffset = {0, 0};
         ShowWindow(hwnd, SW_HIDE);
+        UpdateTrayIcon(hwnd);
         return;
     default:
         break;
