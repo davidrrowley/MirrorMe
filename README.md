@@ -4,7 +4,11 @@ MirrorMe is a tiny Windows desktop utility that mirrors one app window to anothe
 
 Built for quick sharing and second-screen setups: pick a source window, pick a target monitor, and mirror immediately.
 
-I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Prompter. I often want to control an app on the ultrawide while seeing that same window on the Prompter, for example keeping Teams visible and usable while reading a script. There are plenty of other uses I'm sure, but this tiny tool was created to solve this exact thing for me.
+I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Prompter. I often want to control an app on the ultrawide while seeing that same window on the Prompter, for example keeping Teams visible and usable while reading a script. 
+
+My other usecase is when I need to present windows where I'm demonstrating something, on an ultrawide that becomes a juggle of switching shared windows in teams as sharing the ultrawide desktop looks terrible for remote viewers and is super painful and jarring for those watching.  With MirrorMe  I can keep the window on the ultrawide and share the secondary monitor (my Elgato prompter in this instance).  I can quickly switch to the app, duplicate to the monitor, do what I need to do then switch etc. until I'm done, no fuss, no drama and I get to work on my ultrawide - cool beans!
+
+There are plenty of other uses I'm sure, but this tiny tool was created to solve these exact things for me.
 
 ## Screenshots
 
@@ -49,7 +53,8 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
   - `Ctrl+Alt-` Zoom out (hold to zoom continuously; floors at 1:1 fit-to-window)
   - `Ctrl+Alt+0` Reset zoom and pan to 1:1
   - `Ctrl+Alt+R` Reset zoom and pan to 1:1 (alternate)
-  - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor; press again to stop mirroring.
+  - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor; press again to stop mirroring
+  - `Ctrl+Alt+D` Start Drawing
 
 ## Download
 

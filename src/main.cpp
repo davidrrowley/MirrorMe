@@ -71,7 +71,12 @@ constexpr UINT kTrayMenuToggleVisibility = 1101;
 constexpr UINT kTrayMenuExit = 1102;
 constexpr UINT kTrayMenuStartMinimized = 1104;
 constexpr UINT kTrayMenuMirrorForeground = 1105;
-constexpr UINT kTrayMenuAbout = 1106;
+constexpr UINT kTrayMenuAbout    = 1106;
+constexpr UINT kMenuAnnotate     = 1005;
+constexpr UINT kMenuAnnoClear    = 1006;
+constexpr UINT kAnnoPenMenuBase  = 60000;
+constexpr UINT kAnnoSizeMenuBase = 61000;
+constexpr int  kHotkeyAnnotateId = 7;
 
 constexpr UINT kSourceMenuBase = 20000;
 constexpr UINT kMonitorMenuBase = 30000;
@@ -129,6 +134,36 @@ static UINT g_taskbarCreatedMsg = 0;
 static bool g_startMinimizedToTray = false;
 static DisplayMode g_displayMode = DisplayMode::ForegroundExclusive;
 
+// ── Annotation state ─────────────────────────────────────────────────────────
+struct Stroke {
+    std::vector<POINT> points;
+    COLORREF            color     = RGB(220, 50, 50);
+    int                 thickness = 3;
+};
+
+constexpr size_t kAnnoteColorCount = 6;
+constexpr size_t kAnnoteSizeCount  = 3;
+
+static const COLORREF kAnnoteColors[kAnnoteColorCount] = {
+    RGB(220,  50,  50),   // Red
+    RGB(255, 140,   0),   // Orange
+    RGB(255, 220,   0),   // Yellow
+    RGB(  0, 200,  80),   // Green
+    RGB( 60, 130, 255),   // Blue
+    RGB(240, 240, 240),   // White
+};
+static const wchar_t* kAnnoteColorNames[kAnnoteColorCount] = {
+    L"Red", L"Orange", L"Yellow", L"Green", L"Blue", L"White"
+};
+static const int      kAnnoteSizes[kAnnoteSizeCount]      = { 2, 4, 8 };
+static const wchar_t* kAnnoteSizeNames[kAnnoteSizeCount]  = { L"Thin", L"Medium", L"Thick" };
+
+static bool              g_annotateMode    = false;
+static bool              g_annotateDrawing = false;
+static COLORREF          g_annotePenColor  = RGB(220, 50, 50);
+static int               g_annotePenSize   = 3;
+static std::vector<Stroke> g_strokes;
+
 // ── Popup menu state ────────────────────────────────────────────────────────
 // Label = plain action, NavItem = drill-in (shows ›), BackItem = ← Back
 enum class PItemType { Label, NavItem, BackItem, Separator };
@@ -141,7 +176,7 @@ struct PItem {
     int          x = 0, w = 0; // horizontal layout (main bar)
     int          y = 0, h = 0; // vertical layout (flyout child)
 };
-enum class PopView { Root, Sources, Monitors, Transparency, DisplayMode };
+enum class PopView { Root, Sources, Monitors, Transparency, DisplayMode, Annotate };
 static std::vector<PItem> g_popItems;
 static PopView            g_popView       = PopView::Root;
 static int                g_popHover      = -1;
@@ -172,7 +207,8 @@ constexpr UINT kNavSources  = 2001;
 constexpr UINT kNavMonitors = 2002;
 constexpr UINT kNavBack     = 2003;
 constexpr UINT kNavTransparency = 2004;
-constexpr UINT kNavDisplayMode = 2005;
+constexpr UINT kNavDisplayMode  = 2005;
+constexpr UINT kNavAnnotate     = 2006;
 
 // Popup colors
 const COLORREF kPC_Bg     = RGB(22,  22,  26);
@@ -764,6 +800,35 @@ void DrawMirrorContent(HDC paintDc, const RECT& clientRect) {
     }
 }
 
+void DrawAnnotations(HDC dc) {
+    for (const auto& stroke : g_strokes) {
+        if (stroke.points.empty()) continue;
+        if (stroke.points.size() == 1) {
+            // Single click — draw a filled dot
+            const int r = stroke.thickness / 2 + 1;
+            const POINT& p = stroke.points[0];
+            HBRUSH br = CreateSolidBrush(stroke.color);
+            HPEN   np = CreatePen(PS_NULL, 0, 0);
+            HGDIOBJ ob = SelectObject(dc, br);
+            HGDIOBJ op = SelectObject(dc, np);
+            Ellipse(dc, p.x - r, p.y - r, p.x + r, p.y + r);
+            SelectObject(dc, ob); SelectObject(dc, op);
+            DeleteObject(br); DeleteObject(np);
+        } else {
+            LOGBRUSH lb{ BS_SOLID, stroke.color, 0 };
+            HPEN pen = ExtCreatePen(
+                PS_GEOMETRIC | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
+                static_cast<DWORD>(stroke.thickness), &lb, 0, nullptr);
+            HGDIOBJ oldPen = SelectObject(dc, pen);
+            MoveToEx(dc, stroke.points[0].x, stroke.points[0].y, nullptr);
+            for (size_t i = 1; i < stroke.points.size(); ++i)
+                LineTo(dc, stroke.points[i].x, stroke.points[i].y);
+            SelectObject(dc, oldPen);
+            DeleteObject(pen);
+        }
+    }
+}
+
 void DrawNotch(HDC paintDc) {
     // Pill rect shifted by current animation offset
     RECT r = g_state.notchRect;
@@ -1221,6 +1286,25 @@ static void PopupOpenFlyout(HWND parentHwnd, int navItemIdx, PopView view) {
             addLabel(L"Background Underlay", kDisplayModeBackgroundCmd,
                 g_displayMode == DisplayMode::BackgroundUnderlay);
             break;
+        case PopView::Annotate: {
+            PItem toggleIt;
+            toggleIt.type   = PItemType::Label;
+            toggleIt.text   = g_annotateMode ? L"Stop Drawing" : L"Start Drawing";
+            toggleIt.cmdId  = kMenuAnnotate;
+            toggleIt.accent = g_annotateMode;
+            g_popChildItems.push_back(std::move(toggleIt));
+            { PItem s; s.type = PItemType::Separator; g_popChildItems.push_back(s); }
+            for (size_t i = 0; i < kAnnoteColorCount; ++i)
+                addLabel(kAnnoteColorNames[i], kAnnoPenMenuBase + (UINT)i,
+                    g_annotePenColor == kAnnoteColors[i]);
+            { PItem s; s.type = PItemType::Separator; g_popChildItems.push_back(s); }
+            for (size_t i = 0; i < kAnnoteSizeCount; ++i)
+                addLabel(kAnnoteSizeNames[i], kAnnoSizeMenuBase + (UINT)i,
+                    g_annotePenSize == kAnnoteSizes[i]);
+            { PItem s; s.type = PItemType::Separator; g_popChildItems.push_back(s); }
+            addLabel(L"Clear All", kMenuAnnoClear, false);
+            break;
+        }
         default:
             break; // Sources: no label items, just the listbox below
         }
@@ -1317,6 +1401,7 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         if (cmdId == kNavMonitors)          flyView = PopView::Monitors;
                         else if (cmdId == kNavDisplayMode)  flyView = PopView::DisplayMode;
                         else if (cmdId == kNavTransparency) flyView = PopView::Transparency;
+                        else if (cmdId == kNavAnnotate)     flyView = PopView::Annotate;
                         PopupOpenFlyout(hwnd, newHov, flyView);
                     }
                 } else if (newHov >= 0) {
@@ -1362,6 +1447,7 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (ncId == kNavMonitors)          flyView = PopView::Monitors;
                 else if (ncId == kNavDisplayMode)  flyView = PopView::DisplayMode;
                 else if (ncId == kNavTransparency) flyView = PopView::Transparency;
+                else if (ncId == kNavAnnotate)     flyView = PopView::Annotate;
                 PopupOpenFlyout(hwnd, idx, flyView);
             }
             return 0;
@@ -1528,7 +1614,18 @@ void ShowNotchMenu(HWND parentHwnd) {
         add(PItemType::NavItem, L"Display",  kNavDisplayMode,          L"\uE7C4"); // DisplayExternalMirrored
         add(PItemType::NavItem, L"Opacity",  kNavTransparency,         L"\uEB9D"); // Brightness
         sep();
-        // Group 3 — exit
+        // Group 3 — annotate
+        {
+            PItem drawIt;
+            drawIt.type   = PItemType::NavItem;
+            drawIt.text   = L"Draw";
+            drawIt.icon   = L"\uE932";   // Draw icon (Segoe MDL2 Assets)
+            drawIt.cmdId  = kNavAnnotate;
+            drawIt.accent = g_annotateMode;
+            g_popItems.push_back(std::move(drawIt));
+        }
+        sep();
+        // Group 4 — exit
         add(PItemType::Label,   L"Exit",     kMenuExit,                L"\uE8BB"); // Leave
     }
     PopupLayoutH(g_popItems);
@@ -1925,6 +2022,22 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         ShowWindow(hwnd, SW_HIDE);
         UpdateTrayIcon(hwnd);
         return;
+    case kMenuAnnotate:
+        g_annotateMode = !g_annotateMode;
+        if (!g_annotateMode) {
+            if (g_annotateDrawing) {
+                g_annotateDrawing = false;
+                ReleaseCapture();
+            }
+            g_strokes.clear();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return;
+    case kMenuAnnoClear:
+        g_strokes.clear();
+        g_annotateDrawing = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
     default:
         break;
     }
@@ -1952,13 +2065,24 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         return;
     }
 
-    if (commandId >= kMonitorMenuBase) {
+    if (commandId >= kMonitorMenuBase && commandId < kAnnoPenMenuBase) {
         const size_t index = static_cast<size_t>(commandId - kMonitorMenuBase);
         if (index < g_state.monitors.size()) {
             g_state.targetMonitor = g_state.monitors[index].handle;
             ApplyTargetMonitorPlacement();
             InvalidateRect(hwnd, nullptr, TRUE);
         }
+        return;
+    }
+
+    if (commandId >= kAnnoPenMenuBase && commandId < kAnnoPenMenuBase + (UINT)kAnnoteColorCount) {
+        g_annotePenColor = kAnnoteColors[commandId - kAnnoPenMenuBase];
+        return;
+    }
+
+    if (commandId >= kAnnoSizeMenuBase && commandId < kAnnoSizeMenuBase + (UINT)kAnnoteSizeCount) {
+        g_annotePenSize = kAnnoteSizes[commandId - kAnnoSizeMenuBase];
+        return;
     }
 }
 
@@ -1986,6 +2110,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         RegisterHotKey(hwnd, kHotkeyResetZoomId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, '0');
         RegisterHotKey(hwnd, kHotkeyResetZoomAltId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'R');
         RegisterHotKey(hwnd, kHotkeyMirrorForegroundId, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'M');
+        RegisterHotKey(hwnd, kHotkeyAnnotateId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'D');
         return 0;
 
     case kTrayCallbackMsg: {
@@ -2056,6 +2181,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             MirrorForegroundWindowToDefaultMonitor(hwnd);
             return 0;
         }
+        if (wParam == kHotkeyAnnotateId) {
+            HandleMenuCommand(hwnd, kMenuAnnotate);
+            return 0;
+        }
         return 0;
 
     case WM_MOUSEWHEEL:
@@ -2085,9 +2214,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         RECT animNotch = g_state.notchRect;
         OffsetRect(&animNotch, 0, -g_state.notchOffsetY);
         if (!PtInRect(&animNotch, point)) {
-            g_state.dragActive = true;
-            g_state.dragStart = point;
-            g_state.panAtDragStart = g_state.panOffset;
+            if (g_annotateMode) {
+                Stroke stroke;
+                stroke.color     = g_annotePenColor;
+                stroke.thickness = g_annotePenSize;
+                stroke.points.push_back(point);
+                g_strokes.push_back(std::move(stroke));
+                g_annotateDrawing = true;
+            } else {
+                g_state.dragActive = true;
+                g_state.dragStart = point;
+                g_state.panAtDragStart = g_state.panOffset;
+            }
             SetCapture(hwnd);
         }
         return 0;
@@ -2095,7 +2233,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
     case WM_MOUSEMOVE: {
         const POINT cur{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        if (g_state.dragActive) {
+        if (g_annotateDrawing && !g_strokes.empty()) {
+            g_strokes.back().points.push_back(cur);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (g_state.dragActive) {
             g_state.panOffset.x = g_state.panAtDragStart.x + (cur.x - g_state.dragStart.x);
             g_state.panOffset.y = g_state.panAtDragStart.y + (cur.y - g_state.dragStart.y);
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -2130,7 +2271,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
     case WM_LBUTTONUP: {
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        if (g_state.dragActive) {
+        if (g_annotateDrawing) {
+            g_annotateDrawing = false;
+            ReleaseCapture();
+        } else if (g_state.dragActive) {
             g_state.dragActive = false;
             ReleaseCapture();
         } else {
@@ -2144,6 +2288,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return 0;
     }
+
+    case WM_SETCURSOR:
+        if (g_annotateMode && LOWORD(lParam) == HTCLIENT) {
+            SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+            return TRUE;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE && g_annotateMode) {
+            HandleMenuCommand(hwnd, kMenuAnnotate);
+            return 0;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
 
     case WM_COMMAND:
         HandleMenuCommand(hwnd, LOWORD(wParam));
@@ -2172,6 +2330,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         DeleteObject(bgBrush);
 
         DrawMirrorContent(memDc, client);
+        DrawAnnotations(memDc);
         DrawNotch(memDc);
 
         BitBlt(hdc, 0, 0, cw, ch, memDc, 0, 0, SRCCOPY);
@@ -2199,6 +2358,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         UnregisterHotKey(hwnd, kHotkeyResetZoomAltId);
         UnregisterHotKey(hwnd, kHotkeyMirrorForegroundId);
         UnregisterHotKey(hwnd, kHotkeyMirrorForegroundAltId);
+        UnregisterHotKey(hwnd, kHotkeyAnnotateId);
         KillTimer(hwnd, kFrameTimerId);
         KillTimer(hwnd, kNotchTimerId);
         g_wgcCapture.Stop();
