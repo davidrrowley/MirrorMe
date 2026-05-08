@@ -33,6 +33,7 @@ using namespace winrt::Windows::Graphics::DirectX;
 using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
 constexpr wchar_t kWindowClassName[] = L"MirrorMeMainWindow";
+constexpr wchar_t kAppVersion[]      = L"1.0.4";
 constexpr wchar_t kWindowTitle[] = L"MirrorMe";
 
 constexpr UINT_PTR kFrameTimerId = 1;
@@ -68,6 +69,7 @@ constexpr UINT kTrayMenuToggleVisibility = 1101;
 constexpr UINT kTrayMenuExit = 1102;
 constexpr UINT kTrayMenuStartMinimized = 1104;
 constexpr UINT kTrayMenuMirrorForeground = 1105;
+constexpr UINT kTrayMenuAbout = 1106;
 
 constexpr UINT kSourceMenuBase = 20000;
 constexpr UINT kMonitorMenuBase = 30000;
@@ -840,17 +842,50 @@ void DrawNotch(HDC paintDc) {
         DeleteObject(dotBrush);
         DeleteObject(dotPen);
 
-        // ── Chevron (∨) centred between the grids ─────────────────────────
+        // ── "MirrorMe" label + chevron stacked vertically in centre zone ─────
         const int chevW  = MulDiv(10, notchDpi, 96);
         const int chevH  = MulDiv(5,  notchDpi, 96);
-        const int chevPW = MulDiv(2,  notchDpi, 96); // pen width
-        HPEN chevPen = CreatePen(PS_SOLID, chevPW, RGB(200, 200, 215));
-        HGDIOBJ ocp  = SelectObject(paintDc, chevPen);
-        MoveToEx(paintDc, cx - chevW / 2, cy - chevH / 2, nullptr);
-        LineTo(paintDc,   cx,             cy + chevH / 2);
-        LineTo(paintDc,   cx + chevW / 2, cy - chevH / 2);
-        SelectObject(paintDc, ocp);
-        DeleteObject(chevPen);
+        const int chevPW = MulDiv(2,  notchDpi, 96);
+        const int fontPx = MulDiv(10, notchDpi, 72); // 10pt in pixels (~40% bigger than 7pt)
+        const int lblGap = MulDiv(6,  notchDpi, 96); // gap between label and chevron
+        // Total stack height, centred on cy
+        const int stackH   = fontPx + lblGap + chevH;
+        const int stackTop = cy - stackH / 2;
+
+        // Label: horizontal zone between the inner edges of the dot grids
+        {
+            static HFONT s_notchFont = nullptr;
+            static int   s_notchFontPx = 0;
+            if (!s_notchFont || s_notchFontPx != fontPx) {
+                if (s_notchFont) { DeleteObject(s_notchFont); s_notchFont = nullptr; }
+                s_notchFontPx = fontPx;
+                s_notchFont = CreateFont(
+                    -fontPx, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+            }
+            HGDIOBJ oldFont = SelectObject(paintDc, s_notchFont);
+            SetTextColor(paintDc, RGB(170, 170, 185));
+            SetBkMode(paintDc, TRANSPARENT);
+            const int midLeft  = r.left  + inset + gridW + MulDiv(4, notchDpi, 96);
+            const int midRight = r.right - inset - gridW - MulDiv(4, notchDpi, 96);
+            RECT textR = { midLeft, stackTop, midRight, stackTop + fontPx };
+            DrawText(paintDc, L"MirrorMe", -1, &textR,
+                     DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+            SelectObject(paintDc, oldFont);
+        }
+
+        // Chevron: positioned just below the label
+        {
+            const int chevTop = stackTop + fontPx + lblGap;
+            HPEN chevPen = CreatePen(PS_SOLID, chevPW, RGB(200, 200, 215));
+            HGDIOBJ ocp  = SelectObject(paintDc, chevPen);
+            MoveToEx(paintDc, cx - chevW / 2, chevTop,          nullptr);
+            LineTo(paintDc,   cx,             chevTop + chevH);
+            LineTo(paintDc,   cx + chevW / 2, chevTop);
+            SelectObject(paintDc, ocp);
+            DeleteObject(chevPen);
+        }
 
         SelectClipRgn(paintDc, nullptr);
     }
@@ -1108,7 +1143,12 @@ static void PopupOpenFlyout(HWND parentHwnd, int navItemIdx, PopView view) {
     // Build items for this view (no Back button — flyout is dismissed by hovering away)
     {
         auto addLabel = [&](const wchar_t* text, UINT id, bool accent = false) {
-            g_popChildItems.push_back({ PItemType::Label, text, id, accent });
+            PItem it;
+            it.type   = PItemType::Label;
+            it.text   = text;
+            it.cmdId  = id;
+            it.accent = accent;
+            g_popChildItems.push_back(std::move(it));
         };
         switch (view) {
         case PopView::Monitors:
@@ -1414,11 +1454,10 @@ void ShowNotchMenu(HWND parentHwnd) {
             it.type = PItemType::Separator;
             g_popItems.push_back(std::move(it));
         };
-        // Group 1 — zoom & mirror
+        // Group 1 — zoom
         add(PItemType::Label,   L"Zoom In",  kMenuZoomIn,              L"\uE8A3"); // ZoomIn
         add(PItemType::Label,   L"Zoom Out", kMenuZoomOut,             L"\uE71F"); // ZoomOut
         add(PItemType::Label,   L"Reset",    kMenuResetZoom,           L"\uE72C"); // Refresh
-        add(PItemType::Label,   L"Mirror",   kTrayMenuMirrorForeground, L"\uE8AB"); // SwitchApps
         sep();
         // Group 2 — source, monitor, display, opacity
         add(PItemType::NavItem, L"Source",   kNavSources,              L"\uE737"); // AllApps
@@ -1607,6 +1646,55 @@ static void RemoveTrayIcon(HWND hwnd) {
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
+// CBT hook that centres the next MessageBox on the primary monitor
+static HHOOK g_aboutHook = nullptr;
+static LRESULT CALLBACK AboutCbtProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HCBT_ACTIVATE) {
+        HWND dlg = reinterpret_cast<HWND>(wParam);
+        wchar_t cls[32]{};
+        GetClassNameW(dlg, cls, 32);
+        if (wcscmp(cls, L"#32770") == 0) { // MessageBox class
+            RECT wa{};
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0); // primary monitor work area
+            RECT wr{};
+            GetWindowRect(dlg, &wr);
+            const int dlgW = wr.right  - wr.left;
+            const int dlgH = wr.bottom - wr.top;
+            const int x = wa.left + (wa.right  - wa.left - dlgW) / 2;
+            const int y = wa.top  + (wa.bottom - wa.top  - dlgH) / 2;
+            SetWindowPos(dlg, nullptr, x, y, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            // Unhook immediately — one-shot
+            if (g_aboutHook) { UnhookWindowsHookEx(g_aboutHook); g_aboutHook = nullptr; }
+        }
+    }
+    return CallNextHookEx(g_aboutHook, code, wParam, lParam);
+}
+
+static void ShowAboutDialog(HWND hwnd) {
+    const std::wstring msg =
+        L"MirrorMe  v" + std::wstring(kAppVersion) + L"\r\n"
+        L"\r\n"
+        L"Mirrors one app window to another monitor.\r\n"
+        L"Built for ultrawide + Elgato Prompter setups (and anything similar).\r\n"
+        L"Hover over the notch to open the control bar.\r\n"
+        L"\r\n"
+        L"Keyboard shortcuts\r\n"
+        L"  Ctrl+Alt +/\u2212          Zoom in / out\r\n"
+        L"  Ctrl+Alt 0 or R      Reset zoom\r\n"
+        L"  Ctrl+Alt+Shift+M     Mirror foreground window\r\n"
+        L"\r\n"
+        L"github.com/davidrrowley/MirrorMe\r\n"
+        L"GNU General Public License v3 \u2022 \u00a9 2025\u20132026 David Rowley";
+
+    // Install one-shot CBT hook to move the dialog to the primary monitor
+    g_aboutHook = SetWindowsHookExW(WH_CBT, AboutCbtProc,
+        nullptr, GetCurrentThreadId());
+    MessageBoxW(hwnd, msg.c_str(), L"About MirrorMe", MB_OK | MB_ICONINFORMATION);
+    // Safety: unhook if MessageBox returned without HCBT_ACTIVATE firing
+    if (g_aboutHook) { UnhookWindowsHookEx(g_aboutHook); g_aboutHook = nullptr; }
+}
+
 static void ShowTrayContextMenu(HWND hwnd) {
     RefreshSourceWindows();
     RefreshMonitors();
@@ -1627,7 +1715,6 @@ static void ShowTrayContextMenu(HWND hwnd) {
 
     const wchar_t* toggleLabel = IsWindowVisible(hwnd) ? L"Hide MirrorMe" : L"Show MirrorMe";
     AppendMenuW(root, MF_STRING, kTrayMenuToggleVisibility, toggleLabel);
-    AppendMenuW(root, MF_STRING, kTrayMenuMirrorForeground, L"Mirror Foreground Window");
     AppendMenuW(root,
         MF_STRING | (g_startMinimizedToTray ? MF_CHECKED : 0),
         kTrayMenuStartMinimized,
@@ -1675,6 +1762,7 @@ static void ShowTrayContextMenu(HWND hwnd) {
     AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(mode), L"Display Mode");
     AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(opa), L"Transparency");
     AppendMenuW(root, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(root, MF_STRING, kTrayMenuAbout, L"About MirrorMe\u2026");
     AppendMenuW(root, MF_STRING, kTrayMenuExit, L"Exit");
 
     POINT pt{};
@@ -1743,9 +1831,6 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
     case kTrayMenuToggleVisibility:
         ToggleMainWindowVisibility(hwnd);
         return;
-    case kTrayMenuMirrorForeground:
-        MirrorForegroundWindowToDefaultMonitor(hwnd);
-        return;
     case kTrayMenuStartMinimized:
         g_startMinimizedToTray = !g_startMinimizedToTray;
         SaveSettings();
@@ -1759,6 +1844,9 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         g_displayMode = DisplayMode::BackgroundUnderlay;
         SaveSettings();
         ApplyTargetMonitorPlacement();
+        return;
+    case kTrayMenuAbout:
+        ShowAboutDialog(hwnd);
         return;
     case kTrayMenuExit:
         RequestAppExit(hwnd);
