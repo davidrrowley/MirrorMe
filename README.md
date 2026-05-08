@@ -41,11 +41,11 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
 - Transparency control (0% to 100%).
 - Zoom and pan controls.
 - Global hotkeys:
-  - `Ctrl+Alt++` Zoom in
-  - `Ctrl+Alt+-` Zoom out
-  - `Ctrl+Alt+0` Reset zoom
-  - `Ctrl+Alt+R` Reset zoom (alternate)
-  - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor, the same again will stop mirroring.
+  - `Ctrl+Alt++` Zoom in (hold to zoom continuously)
+  - `Ctrl+Alt+-` Zoom out (hold to zoom continuously; floors at 1:1 fit-to-window)
+  - `Ctrl+Alt+0` Reset zoom and pan to 1:1
+  - `Ctrl+Alt+R` Reset zoom and pan to 1:1 (alternate)
+  - `Ctrl+Alt+Shift+M` Mirror current foreground window to second non-primary monitor; press again to stop mirroring (zoom resets on stop).
 
 ## Download
 

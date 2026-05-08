@@ -630,9 +630,9 @@ RECT ComputeDestinationRect(int srcWidth, int srcHeight, const RECT& clientRect,
     const int dstWidth = std::max(1, static_cast<int>(srcWidth * scaled));
     const int dstHeight = std::max(1, static_cast<int>(srcHeight * scaled));
 
-    // Centre then apply pan, clamped so at least half the image stays visible.
-    const int maxPanX = std::max(0, dstWidth / 2);
-    const int maxPanY = std::max(0, dstHeight / 2);
+    // Centre then apply pan, clamped to the overflow only — no pan when content fits.
+    const int maxPanX = std::max(0, (dstWidth  - clientWidth)  / 2);
+    const int maxPanY = std::max(0, (dstHeight - clientHeight) / 2);
     const int clampedPanX = std::max(-maxPanX, std::min(maxPanX, static_cast<int>(pan.x)));
     const int clampedPanY = std::max(-maxPanY, std::min(maxPanY, static_cast<int>(pan.y)));
 
@@ -1822,7 +1822,7 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
     case kMenuZoomOut:
-        g_state.zoom = std::max(0.2f, g_state.zoom - 0.1f);
+        g_state.zoom = std::max(1.0f, g_state.zoom - 0.1f);
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
     case kMenuResetZoom:
@@ -1912,8 +1912,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         ApplyTargetMonitorPlacement();
         SetTimer(hwnd, kFrameTimerId, kFrameIntervalMs, nullptr);
         SetTimer(hwnd, kNotchTimerId, kNotchTimerMs, nullptr);
-        RegisterHotKey(hwnd, kHotkeyZoomInId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_OEM_PLUS);
-        RegisterHotKey(hwnd, kHotkeyZoomOutId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_OEM_MINUS);
+        RegisterHotKey(hwnd, kHotkeyZoomInId,  MOD_CONTROL | MOD_ALT, VK_OEM_PLUS);
+        RegisterHotKey(hwnd, kHotkeyZoomOutId,  MOD_CONTROL | MOD_ALT, VK_OEM_MINUS);
         RegisterHotKey(hwnd, kHotkeyResetZoomId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, '0');
         RegisterHotKey(hwnd, kHotkeyResetZoomAltId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'R');
         RegisterHotKey(hwnd, kHotkeyMirrorForegroundId, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'M');
@@ -1973,7 +1973,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (wParam == kHotkeyZoomOutId) {
-            g_state.zoom = std::max(0.2f, g_state.zoom - 0.1f);
+            g_state.zoom = std::max(1.0f, g_state.zoom - 0.1f);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
