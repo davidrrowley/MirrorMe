@@ -9,12 +9,15 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
 ## Screenshots
 
 **MirrorMe lives quietly in the system tray, ready when you need it.**
+
 ![System tray icon](assets/System%20Tray.png)
 
 **Pick a window, pick a monitor — the mirror appears full-screen instantly (bottom is my ultrawide, top is my Elgato Prompter).**
+
 ![Mirror in action across two monitors](assets/Mirror%20In%20Action.png)
 
 **The notch popup gives quick access to zoom, transparency, display mode, and source selection.**
+
 ![MirrorMe notch menu](assets/MirrorMe%20Notch%20Menu.png)
 
 ## Project Status
