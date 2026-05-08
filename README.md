@@ -43,6 +43,7 @@ I built MirrorMe for my own setup: an ultrawide screen plus a small Elgato Promp
   - Background Underlay
 - Transparency control (0% to 100%).
 - Zoom and pan controls.
+  - `Ctrl+Scroll` Zoom in/out with the mouse wheel (floors at 1:1 fit-to-window)
 - Global hotkeys:
   - `Ctrl+Alt++` Zoom in (hold to zoom continuously)
   - `Ctrl+Alt+-` Zoom out (hold to zoom continuously; floors at 1:1 fit-to-window)

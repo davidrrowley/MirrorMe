@@ -39,6 +39,8 @@ constexpr wchar_t kWindowTitle[] = L"MirrorMe";
 constexpr UINT_PTR kFrameTimerId = 1;
 constexpr UINT kFrameIntervalMs = 16;
 constexpr UINT_PTR kNotchTimerId = 2;
+constexpr UINT_PTR kPopCloseTimerId = 10;  // grace-period before closing flyout on mouse-leave
+constexpr UINT kPopCloseDelayMs = 150;
 constexpr UINT kNotchTimerMs = 16;   // ~60 fps animation
 constexpr int kNotchHideDelayMs = 1800; // ms idle before hiding
 constexpr int kNotchPeekPx = 4;        // pixels visible when hidden
@@ -147,6 +149,7 @@ static int                g_popListY      = 0;
 static int                g_popListH      = 0;
 static HWND               g_popHwnd       = nullptr;
 static HWND               g_popList       = nullptr;
+static WNDPROC            g_popListOrigProc = nullptr;
 static HWND               g_popParent     = nullptr;
 static HFONT              g_popFont       = nullptr;
 static HFONT              g_popFontHdr    = nullptr;
@@ -1089,7 +1092,49 @@ static void PopupPaintItems(HDC dc, const std::vector<PItem>& items, int hover,
 
 static void PopupDestroyList() {
     if (g_popList) { DestroyWindow(g_popList); g_popList = nullptr; }
+    g_popListOrigProc = nullptr;
     if (g_popListBrush) { DeleteObject(g_popListBrush); g_popListBrush = nullptr; }
+}
+
+// Subclass proc for the source-window listbox — tracks hover so each item highlights.
+static int g_popListHoverIdx = -1;
+
+static LRESULT CALLBACK PopListSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_ERASEBKGND:
+        // Suppress — WM_DRAWITEM fills every item rect, so erase just causes a flash.
+        return 1;
+    case WM_MOUSEMOVE: {
+        const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        const LRESULT hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
+        const int idx = (HIWORD(hit) == 0) ? static_cast<int>(LOWORD(hit)) : -1;
+        if (idx != g_popListHoverIdx) {
+            g_popListHoverIdx = idx;
+            SendMessageW(hwnd, LB_SETCURSEL, (idx >= 0) ? idx : (WPARAM)-1, 0);
+        }
+        TRACKMOUSEEVENT tme{ sizeof(tme), TME_LEAVE, hwnd, 0 };
+        TrackMouseEvent(&tme);
+        // Cancel parent bar's close-flyout timer while mouse is in the list
+        if (g_popHwnd) KillTimer(g_popHwnd, kPopCloseTimerId);
+        break;
+    }
+    case WM_MOUSELEAVE:
+        g_popListHoverIdx = -1;
+        SendMessageW(hwnd, LB_SETCURSEL, (WPARAM)-1, 0);
+        break;
+    case WM_LBUTTONUP: {
+        // Hover pre-selects the item via LB_SETCURSEL, so LBN_SELCHANGE won't fire on
+        // click (selection didn't change). Handle click explicitly here instead.
+        const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        const LRESULT hit = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
+        if (HIWORD(hit) == 0 && !g_state.sourceWindows.empty()) {
+            PostMessageW(g_popParent, WM_COMMAND, kSourceMenuBase + LOWORD(hit), 0);
+            DestroyWindow(g_popHwnd);
+        }
+        return 0;
+    }
+    }
+    return CallWindowProcW(g_popListOrigProc, hwnd, msg, wp, lp);
 }
 
 static void PopupCreateList(HWND hwnd) {
@@ -1116,6 +1161,9 @@ static void PopupCreateList(HWND hwnd) {
         for (const auto& w : g_state.sourceWindows)
             SendMessageW(g_popList, LB_ADDSTRING, 0, (LPARAM)w.title.c_str());
     }
+    // Subclass to enable hover highlighting
+    g_popListOrigProc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(g_popList, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PopListSubclassProc)));
 }
 
 // ── Flyout close / open ──────────────────────────────────────────────────────
@@ -1253,6 +1301,11 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         const int newHov = isChild
             ? PopupHitTest(items, GET_Y_LPARAM(lp))
             : PopupHitTestH(items, GET_X_LPARAM(lp));
+        // Mouse is back in the bar — cancel any pending flyout-close timer.
+        if (!isChild && g_popHwnd)
+            KillTimer(g_popHwnd, kPopCloseTimerId);
+        if (isChild && g_popHwnd)
+            KillTimer(g_popHwnd, kPopCloseTimerId);
         if (newHov != hover) {
             hover = newHov;
             if (!isChild) {
@@ -1279,14 +1332,9 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE:
         hover = -1;
         if (!isChild) {
-            // Keep the flyout open if the mouse moved directly into it.
-            bool inChild = false;
-            if (g_popChildHwnd && IsWindow(g_popChildHwnd)) {
-                POINT cur; GetCursorPos(&cur);
-                RECT cr; GetWindowRect(g_popChildHwnd, &cr);
-                inChild = (PtInRect(&cr, cur) != 0);
-            }
-            if (!inChild) PopupCloseFlyout();
+            // Defer close by a short grace period so slow mouse movement into the flyout
+            // doesn't dismiss it before the cursor arrives.
+            SetTimer(hwnd, kPopCloseTimerId, kPopCloseDelayMs, nullptr);
         }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -1323,6 +1371,20 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         DestroyWindow(hwnd);
         return 0;
     }
+    case WM_TIMER:
+        if (wp == kPopCloseTimerId) {
+            KillTimer(hwnd, kPopCloseTimerId);
+            // Only close if cursor is not in the flyout child.
+            bool inChild = false;
+            if (g_popChildHwnd && IsWindow(g_popChildHwnd)) {
+                POINT cur; GetCursorPos(&cur);
+                RECT cr; GetWindowRect(g_popChildHwnd, &cr);
+                inChild = (PtInRect(&cr, cur) != 0);
+            }
+            if (!inChild) PopupCloseFlyout();
+            return 0;
+        }
+        return 0;
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
             if (g_popChildHwnd && IsWindow(g_popChildHwnd)) {
@@ -1349,6 +1411,7 @@ LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_popChildHwnd    = nullptr;
             g_popActiveNavIdx = -1;
         } else {
+            KillTimer(hwnd, kPopCloseTimerId);
             if (g_popChildHwnd && IsWindow(g_popChildHwnd))
                 DestroyWindow(g_popChildHwnd);
             g_popHwnd = nullptr;
@@ -1985,6 +2048,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (wParam == kHotkeyMirrorForegroundId || wParam == kHotkeyMirrorForegroundAltId) {
             MirrorForegroundWindowToDefaultMonitor(hwnd);
+            return 0;
+        }
+        return 0;
+
+    case WM_MOUSEWHEEL:
+        if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            if (delta > 0)
+                g_state.zoom = std::min(5.0f, g_state.zoom + 0.1f);
+            else
+                g_state.zoom = std::max(1.0f, g_state.zoom - 0.1f);
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         return 0;
