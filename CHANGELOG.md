@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-05-08
+
+### Fixed
+
+- Resolved window discovery issues on ARM (WhatsApp and other apps were incorrectly excluded)
+
+### Added
+
+- Drawing capabilities: freehand pen and rectangle annotation overlay with colour and size picker, toggled via notch bar or Ctrl+Alt+D
+
 ## [Unreleased]
 
 ### Added
