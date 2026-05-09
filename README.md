@@ -1,6 +1,6 @@
 # MirrorMe
 
-MirrorMe is a tiny Windows desktop utility that mirrors one app window to another monitor with a tray-first workflow.
+MirrorMe is a tiny Windows desktop utility that mirrors one app window to another monitor with a tray/notch first workflow.
 
 Built for quick sharing and second-screen setups: pick a source window, pick a target monitor, and mirror immediately.
 
