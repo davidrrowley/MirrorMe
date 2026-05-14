@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] - 2026-05-14
+
+### Changed
+
+- Bumped version to 1.1.2
+
 ## [1.1.1] - 2026-05-08
 
 ### Changed
