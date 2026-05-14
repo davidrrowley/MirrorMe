@@ -2495,6 +2495,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     default:
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
 } // namespace
