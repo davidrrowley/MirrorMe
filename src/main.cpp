@@ -2196,6 +2196,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
     case WM_TIMER:
         if (wParam == kFrameTimerId) {
+            // Auto-stop mirroring if the source window has been closed or minimised.
+            if (g_state.sourceWindow != nullptr &&
+                (!IsWindow(g_state.sourceWindow) || IsIconic(g_state.sourceWindow))) {
+                g_wgcCapture.Stop();
+                g_state.wgcCaptureActive = false;
+                g_state.sourceWindow = nullptr;
+                g_state.zoom = 1.0f;
+                g_state.panOffset = {0, 0};
+                ShowWindow(hwnd, SW_HIDE);
+                UpdateTrayIcon(hwnd);
+                break;
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (wParam == kNotchTimerId) {
             const int notchH = g_state.notchRect.bottom - g_state.notchRect.top;
