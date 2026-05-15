@@ -2034,6 +2034,8 @@ static void ShowTrayContextMenu(HWND hwnd) {
     DestroyMenu(root);
 }
 
+static void ClearAnnotationState(HWND hwnd);
+
 static void MirrorForegroundWindowToDefaultMonitor(HWND hwnd) {
     HWND candidate = GetForegroundWindow();
     if (candidate) {
@@ -2060,6 +2062,7 @@ static void MirrorForegroundWindowToDefaultMonitor(HWND hwnd) {
         g_state.sourceWindow = nullptr;
         g_state.zoom = 1.0f;
         g_state.panOffset = {0, 0};
+        ClearAnnotationState(hwnd);
         UpdateTrayIcon(hwnd);
         ApplyIdleNotchPlacement();
         return;
@@ -2069,10 +2072,22 @@ static void MirrorForegroundWindowToDefaultMonitor(HWND hwnd) {
     g_state.targetMonitor = PickDefaultMonitor();
     g_state.sourceWindow = candidate;
     g_state.panOffset = {0, 0};
+    ClearAnnotationState(hwnd);
     g_state.wgcCaptureActive = g_state.useWgcPath && g_wgcCapture.Start(g_state.sourceWindow);
     ApplyTargetMonitorPlacement();
     UpdateTrayIcon(hwnd);
     ShowMainWindow(hwnd);
+}
+
+static void ClearAnnotationState(HWND hwnd) {
+    if (g_annotateDrawing || g_annotateRectDrawing) {
+        ReleaseCapture();
+    }
+    g_annotateMode        = false;
+    g_annotateDrawing     = false;
+    g_annotateRectDrawing = false;
+    g_strokes.clear();
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void HandleMenuCommand(HWND hwnd, UINT commandId) {
@@ -2115,21 +2130,15 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         g_state.sourceWindow = nullptr;
         g_state.zoom = 1.0f;
         g_state.panOffset = {0, 0};
+        ClearAnnotationState(hwnd);
         UpdateTrayIcon(hwnd);
         ApplyIdleNotchPlacement();
         return;
     case kMenuAnnotate:
         g_annotateMode = !g_annotateMode;
         if (!g_annotateMode) {
-            if (g_annotateDrawing) {
-                g_annotateDrawing = false;
-                ReleaseCapture();
-            }
-            if (g_annotateRectDrawing) {
-                g_annotateRectDrawing = false;
-                ReleaseCapture();
-            }
-            g_strokes.clear();
+            ClearAnnotationState(hwnd);
+        } else {
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return;
@@ -2157,6 +2166,7 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         if (index < g_state.sourceWindows.size()) {
             g_state.sourceWindow = g_state.sourceWindows[index].hwnd;
             g_state.panOffset = {0, 0};
+            ClearAnnotationState(hwnd);
             g_state.wgcCaptureActive = g_state.useWgcPath && g_wgcCapture.Start(g_state.sourceWindow);
             ApplyTargetMonitorPlacement();
             UpdateTrayIcon(hwnd);
@@ -2281,6 +2291,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_state.sourceWindow = nullptr;
                 g_state.zoom = 1.0f;
                 g_state.panOffset = {0, 0};
+                ClearAnnotationState(hwnd);
                 UpdateTrayIcon(hwnd);
                 // Shrink to just the notch pill so we don't cover the desktop.
                 ApplyIdleNotchPlacement();
@@ -2406,6 +2417,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_state.sourceWindow = nullptr;
                 g_state.zoom = 1.0f;
                 g_state.panOffset = {0, 0};
+                ClearAnnotationState(hwnd);
                 UpdateTrayIcon(hwnd);
             }
             ShowWindow(hwnd, SW_HIDE);
