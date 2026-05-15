@@ -706,7 +706,7 @@ void UpdateNotchRect(HWND hwnd) {
     g_state.notchRect.bottom = scaledH;
 }
 
-void ApplyTargetMonitorPlacement() {
+void ApplyTargetMonitorPlacement(bool show = true) {
     MONITORINFOEXW info{};
     info.cbSize = sizeof(info);
 
@@ -716,6 +716,10 @@ void ApplyTargetMonitorPlacement() {
 
     const RECT& monitorRect = info.rcMonitor;
     const bool foregroundExclusive = (g_displayMode == DisplayMode::ForegroundExclusive);
+    // Clear any idle-notch clip region before expanding to full-screen mirroring.
+    SetWindowRgn(g_state.window, nullptr, TRUE);
+    const UINT flags = (show ? SWP_SHOWWINDOW : 0u)
+                     | (foregroundExclusive ? 0u : SWP_NOACTIVATE);
     SetWindowPos(
         g_state.window,
         foregroundExclusive ? HWND_TOPMOST : HWND_BOTTOM,
@@ -723,7 +727,63 @@ void ApplyTargetMonitorPlacement() {
         monitorRect.top,
         monitorRect.right - monitorRect.left,
         monitorRect.bottom - monitorRect.top,
-        SWP_SHOWWINDOW | (foregroundExclusive ? 0 : SWP_NOACTIVATE));
+        flags);
+}
+
+// Sizes the window to just the notch pill footprint at the top of the target
+// monitor.  Used when idle (no source) so the black mirror background does not
+// cover the desktop.
+void ApplyIdleNotchPlacement(bool show = true) {
+    MONITORINFOEXW info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(g_state.targetMonitor, &info)) return;
+
+    // Safety valve: never show the idle notch on the primary monitor.
+    // If the target has somehow resolved to primary, hide and bail out.
+    if (info.dwFlags & MONITORINFOF_PRIMARY) {
+        ShowWindow(g_state.window, SW_HIDE);
+        return;
+    }
+
+    const RECT& mr = info.rcMonitor;
+    const bool  fe = (g_displayMode == DisplayMode::ForegroundExclusive);
+    const HWND  insertAfter = fe ? HWND_TOPMOST : HWND_BOTTOM;
+
+    // Hide now so the full-width DPI probe below doesn't flash a black
+    // rectangle while the window is mid-transition.
+    if (IsWindowVisible(g_state.window)) ShowWindow(g_state.window, SW_HIDE);
+
+    // Briefly expand to full-monitor width so GetDpiForWindow returns the
+    // correct per-monitor DPI before we shrink to the notch footprint.
+    SetWindowPos(g_state.window, insertAfter,
+        mr.left, mr.top, mr.right - mr.left, mr.bottom - mr.top,
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+
+    const UINT dpi    = GetDpiForWindow(g_state.window);
+    const int  notchW = MulDiv(kNotchWidth,  dpi, 96);
+    const int  notchH = MulDiv(kNotchHeight, dpi, 96);
+    const int  shadow = MulDiv(4,            dpi, 96);
+    const int  winW   = notchW + shadow * 2;
+    const int  winH   = notchH + shadow * 2;
+    const int  winX   = mr.left + (mr.right - mr.left - winW) / 2;
+
+    UINT flags = SWP_NOACTIVATE | SWP_NOSENDCHANGING;
+    if (show) flags |= SWP_SHOWWINDOW;
+    SetWindowPos(g_state.window, insertAfter, winX, mr.top, winW, winH, flags);
+
+    // Clip the window to the notch+shadow silhouette (flat top, round bottom)
+    // so the rectangular corners of the bounding box don't appear as opaque
+    // black against the desktop.
+    HRGN wndRgn    = CreateRoundRectRgn(0, 0, winW, winH, winH, winH);
+    HRGN wndTopRgn = CreateRectRgn(0, 0, winW, winH / 2);
+    CombineRgn(wndRgn, wndRgn, wndTopRgn, RGN_OR);
+    DeleteObject(wndTopRgn);
+    SetWindowRgn(g_state.window, wndRgn, TRUE); // OS takes ownership of wndRgn
+
+    UpdateNotchRect(g_state.window);
+    g_state.notchOffsetY = 0;
+    g_state.notchState   = NotchState::Visible;
+    g_state.notchIdleMs  = 0;
 }
 
 void DrawMirrorContentGdiFallback(HDC paintDc, const RECT& clientRect) {
@@ -862,31 +922,35 @@ void DrawNotch(HDC paintDc) {
         OffsetRect(&sr, 0, i);
         const int alpha = 30 - i * 5; // fade out
         HBRUSH sb = CreateSolidBrush(RGB(alpha, alpha, alpha));
-        const int radius = (sr.bottom - sr.top); // full round
-        HPEN sp = CreatePen(PS_NULL, 0, 0);
-        HGDIOBJ op = SelectObject(paintDc, sp);
-        HGDIOBJ ob = SelectObject(paintDc, sb);
-        RoundRect(paintDc, sr.left, sr.top, sr.right, sr.bottom, radius, radius);
-        SelectObject(paintDc, op); SelectObject(paintDc, ob);
-        DeleteObject(sb); DeleteObject(sp);
+        const int sRadius = (sr.bottom - sr.top); // full round for bottom
+        // Flat-top, round-bottom: pill region OR top-fill rect to square the top corners
+        HRGN shadowRgn    = CreateRoundRectRgn(sr.left, sr.top, sr.right, sr.bottom, sRadius, sRadius);
+        HRGN shadowTopRgn = CreateRectRgn(sr.left, sr.top, sr.right, sr.top + sRadius / 2);
+        CombineRgn(shadowRgn, shadowRgn, shadowTopRgn, RGN_OR);
+        DeleteObject(shadowTopRgn);
+        FillRgn(paintDc, shadowRgn, sb);
+        DeleteObject(shadowRgn);
+        DeleteObject(sb);
     }
 
-    // Pill background
-    const int radius = (r.bottom - r.top); // makes a perfect pill
+    // Notch background: flat top (straight sides from screen edge), rounded bottom
+    const int radius = (r.bottom - r.top); // round radius for bottom curve
     HBRUSH bg = CreateSolidBrush(RGB(18, 18, 18));
-    HPEN   np = CreatePen(PS_NULL, 0, 0);
-    HGDIOBJ oldPen  = SelectObject(paintDc, np);
-    HGDIOBJ oldBrush = SelectObject(paintDc, bg);
-    RoundRect(paintDc, r.left, r.top, r.right, r.bottom, radius, radius);
-    SelectObject(paintDc, oldPen);
-    SelectObject(paintDc, oldBrush);
+    HRGN   bgRgn    = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, radius, radius);
+    HRGN   bgTopRgn = CreateRectRgn(r.left, r.top, r.right, r.top + radius / 2);
+    CombineRgn(bgRgn, bgRgn, bgTopRgn, RGN_OR);
+    DeleteObject(bgTopRgn);
+    FillRgn(paintDc, bgRgn, bg);
+    DeleteObject(bgRgn);
     DeleteObject(bg);
-    DeleteObject(np);
 
     // Only draw contents when notch is meaningfully visible
     if (g_state.notchOffsetY < (g_state.notchRect.bottom - g_state.notchRect.top) * 3 / 4) {
-        // Clip to pill
-        HRGN rgn = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, radius, radius);
+        // Clip to flat-top, round-bottom shape
+        HRGN rgn    = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, radius, radius);
+        HRGN topRgn = CreateRectRgn(r.left, r.top, r.right, r.top + radius / 2);
+        CombineRgn(rgn, rgn, topRgn, RGN_OR);
+        DeleteObject(topRgn);
         SelectClipRgn(paintDc, rgn);
         DeleteObject(rgn);
 
@@ -1690,15 +1754,21 @@ static void RequestAppExit(HWND hwnd) {
 }
 
 static void ShowMainWindow(HWND hwnd) {
-    const bool foregroundExclusive = (g_displayMode == DisplayMode::ForegroundExclusive);
-    ApplyTargetMonitorPlacement();
-    if (!IsWindowVisible(hwnd)) {
-        ShowWindow(hwnd, foregroundExclusive ? SW_SHOW : SW_SHOWNOACTIVATE);
+    // When actively mirroring, show full-screen on the target monitor.
+    // When idle (no source), show only the notch pill — never a black overlay.
+    if (g_state.sourceWindow != nullptr) {
+        const bool foregroundExclusive = (g_displayMode == DisplayMode::ForegroundExclusive);
+        ApplyTargetMonitorPlacement();
+        if (!IsWindowVisible(hwnd)) {
+            ShowWindow(hwnd, foregroundExclusive ? SW_SHOW : SW_SHOWNOACTIVATE);
+        }
+        if (foregroundExclusive) {
+            SetForegroundWindow(hwnd);
+        }
+        InvalidateRect(hwnd, nullptr, TRUE);
+    } else {
+        ApplyIdleNotchPlacement();
     }
-    if (foregroundExclusive) {
-        SetForegroundWindow(hwnd);
-    }
-    InvalidateRect(hwnd, nullptr, TRUE);
 }
 
 static void ToggleMainWindowVisibility(HWND hwnd) {
@@ -1990,8 +2060,8 @@ static void MirrorForegroundWindowToDefaultMonitor(HWND hwnd) {
         g_state.sourceWindow = nullptr;
         g_state.zoom = 1.0f;
         g_state.panOffset = {0, 0};
-        ShowWindow(hwnd, SW_HIDE);
         UpdateTrayIcon(hwnd);
+        ApplyIdleNotchPlacement();
         return;
     }
 
@@ -2045,8 +2115,8 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         g_state.sourceWindow = nullptr;
         g_state.zoom = 1.0f;
         g_state.panOffset = {0, 0};
-        ShowWindow(hwnd, SW_HIDE);
         UpdateTrayIcon(hwnd);
+        ApplyIdleNotchPlacement();
         return;
     case kMenuAnnotate:
         g_annotateMode = !g_annotateMode;
@@ -2099,8 +2169,12 @@ void HandleMenuCommand(HWND hwnd, UINT commandId) {
         const size_t index = static_cast<size_t>(commandId - kMonitorMenuBase);
         if (index < g_state.monitors.size()) {
             g_state.targetMonitor = g_state.monitors[index].handle;
-            ApplyTargetMonitorPlacement();
-            InvalidateRect(hwnd, nullptr, TRUE);
+            if (g_state.sourceWindow != nullptr) {
+                ApplyTargetMonitorPlacement();
+                InvalidateRect(hwnd, nullptr, TRUE);
+            } else {
+                ApplyIdleNotchPlacement();
+            }
         }
         return;
     }
@@ -2134,7 +2208,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         AddTrayIcon(hwnd);
         ApplyWindowOpacity(hwnd);
-        ApplyTargetMonitorPlacement();
+        ApplyTargetMonitorPlacement(/*show=*/false);  // position silently; wWinMain controls initial visibility
         SetTimer(hwnd, kFrameTimerId, kFrameIntervalMs, nullptr);
         SetTimer(hwnd, kNotchTimerId, kNotchTimerMs, nullptr);
         RegisterHotKey(hwnd, kHotkeyZoomInId,  MOD_CONTROL | MOD_ALT, VK_OEM_PLUS);
@@ -2148,11 +2222,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
 
     case kFirstRunPeekMsg: {
-        // Show just the notch pill at the top-centre of the primary monitor,
-        // without covering the whole screen with the mirror window.
-        HMONITOR hpri = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        // Show just the notch pill at the top-centre of the target monitor
+        // (secondary/Elgato if connected, primary otherwise).
         MONITORINFO mi{ sizeof(mi) };
-        GetMonitorInfoW(hpri, &mi);
+        HMONITOR peekMon = g_state.targetMonitor;
+        if (!peekMon || !GetMonitorInfoW(peekMon, &mi)) {
+            peekMon = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+            GetMonitorInfoW(peekMon, &mi);
+        }
         const RECT& mr = mi.rcMonitor;
 
         // Place the window briefly at full width on the monitor so
@@ -2204,8 +2281,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_state.sourceWindow = nullptr;
                 g_state.zoom = 1.0f;
                 g_state.panOffset = {0, 0};
-                ShowWindow(hwnd, SW_HIDE);
                 UpdateTrayIcon(hwnd);
+                // Shrink to just the notch pill so we don't cover the desktop.
+                ApplyIdleNotchPlacement();
                 break;
             }
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -2226,21 +2304,33 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 if (g_state.notchOffsetY >= hiddenY) {
                     g_state.notchOffsetY = hiddenY;
                     g_state.notchState  = NotchState::Hidden;
+                    const bool wasFirstRun = g_firstRunPeek;
                     if (g_firstRunPeek) {
                         g_firstRunPeek = false;
-                        ShowWindow(hwnd, SW_HIDE);
-                        // Silently reposition to the intended target monitor
-                        // so the next ShowWindow goes to the right place.
+                        // Only transition to the full idle screen if a dedicated
+                        // secondary monitor is available; otherwise hide so we don't
+                        // leave the idle screen on the primary desktop.
                         MONITORINFO tmi{ sizeof(tmi) };
-                        if (g_state.targetMonitor &&
-                            GetMonitorInfoW(g_state.targetMonitor, &tmi)) {
-                            const RECT& tr = tmi.rcMonitor;
-                            const bool fe = (g_displayMode == DisplayMode::ForegroundExclusive);
-                            SetWindowPos(hwnd, fe ? HWND_TOPMOST : HWND_BOTTOM,
-                                tr.left, tr.top,
-                                tr.right - tr.left, tr.bottom - tr.top,
-                                SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+                        const bool targetIsSecondary =
+                            g_state.targetMonitor != nullptr &&
+                            GetMonitorInfoW(g_state.targetMonitor, &tmi) &&
+                            !(tmi.dwFlags & MONITORINFOF_PRIMARY);
+                        if (targetIsSecondary) {
+                            ApplyIdleNotchPlacement();
+                        } else {
+                            ShowWindow(hwnd, SW_HIDE);
                         }
+                    }
+                    // In idle mode (non-first-run), shrink the window region to just
+                    // the peek strip so the shadow silhouette isn't visible at rest.
+                    if (!wasFirstRun && g_state.sourceWindow == nullptr) {
+                        RECT wr{};
+                        GetWindowRect(hwnd, &wr);
+                        const int winW = wr.right - wr.left;
+                        const UINT dpi = GetDpiForWindow(hwnd);
+                        const int peekPx = std::max(1, MulDiv(kNotchPeekPx, dpi, 96));
+                        HRGN peekRgn = CreateRectRgn(0, 0, winW, peekPx);
+                        SetWindowRgn(hwnd, peekRgn, TRUE);
                     }
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -2295,11 +2385,72 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return 0;
 
-    case WM_DISPLAYCHANGE:
+    case WM_DISPLAYCHANGE: {
+        const int     prevCount  = static_cast<int>(g_state.monitors.size());
+        const HMONITOR prevTarget = g_state.targetMonitor;
         RefreshMonitors();
-        ApplyTargetMonitorPlacement();
-        InvalidateRect(hwnd, nullptr, TRUE);
+        // If a monitor was removed while actively mirroring, stop and hide.
+        // This covers capture cards / video switches that lose their display signal
+        // (no fake EDID), which would otherwise leave MirrorMe black and fullscreen
+        // on the primary monitor.
+        const int  newCount    = static_cast<int>(g_state.monitors.size());
+        const bool monitorLost  = newCount < prevCount ||
+            (prevTarget != nullptr && g_state.targetMonitor != prevTarget);
+        const bool monitorAdded = newCount > prevCount;
+        if (monitorLost) {
+            // A monitor disappeared (e.g., capture card / video switch disconnected).
+            // Stop any active capture and hide — there is no valid display to use.
+            if (g_state.sourceWindow != nullptr) {
+                g_wgcCapture.Stop();
+                g_state.wgcCaptureActive = false;
+                g_state.sourceWindow = nullptr;
+                g_state.zoom = 1.0f;
+                g_state.panOffset = {0, 0};
+                UpdateTrayIcon(hwnd);
+            }
+            ShowWindow(hwnd, SW_HIDE);
+        } else if (monitorAdded) {
+            // A new monitor appeared (e.g., capture card reconnected).
+            // Re-pick the target so the newly available non-primary display is preferred.
+            g_state.targetMonitor = PickDefaultMonitor();
+            MONITORINFO tmi{ sizeof(tmi) };
+            const bool targetIsSecondary =
+                g_state.targetMonitor != nullptr &&
+                GetMonitorInfoW(g_state.targetMonitor, &tmi) &&
+                !(tmi.dwFlags & MONITORINFOF_PRIMARY);
+            if (targetIsSecondary) {
+                if (g_state.sourceWindow != nullptr) {
+                    ApplyTargetMonitorPlacement();
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                } else {
+                    ApplyIdleNotchPlacement();
+                }
+            }
+        } else if (IsWindowVisible(hwnd)) {
+            // Count unchanged (e.g., resolution change) — reposition.
+            if (g_state.sourceWindow != nullptr) {
+                ApplyTargetMonitorPlacement();
+                InvalidateRect(hwnd, nullptr, TRUE);
+            } else {
+                ApplyIdleNotchPlacement();
+            }
+        }
+        // Safety net: if the window ended up hidden but a secondary monitor is
+        // now available, show the idle notch.  Handles the timing race where
+        // WM_DISPLAYCHANGE fires before the reconnecting monitor is fully
+        // enumerable, causing monitorAdded to miss the event on earlier messages.
+        if (!IsWindowVisible(hwnd) && g_state.sourceWindow == nullptr) {
+            const HMONITOR bestTarget = PickDefaultMonitor();
+            MONITORINFO tmi{ sizeof(tmi) };
+            if (bestTarget != nullptr &&
+                GetMonitorInfoW(bestTarget, &tmi) &&
+                !(tmi.dwFlags & MONITORINFOF_PRIMARY)) {
+                g_state.targetMonitor = bestTarget;
+                ApplyIdleNotchPlacement();
+            }
+        }
         return 0;
+    }
 
     case WM_SIZE:
         UpdateNotchRect(hwnd);
@@ -2354,6 +2505,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_state.notchIdleMs = 0;
                 if (g_state.notchState == NotchState::Hidden ||
                     g_state.notchState == NotchState::Hiding) {
+                    // Restore the full shadow region if it was shrunk to the peek strip.
+                    if (g_state.notchState == NotchState::Hidden &&
+                        g_state.sourceWindow == nullptr) {
+                        RECT wr{};
+                        GetWindowRect(hwnd, &wr);
+                        const int winW = wr.right - wr.left;
+                        const int winH = wr.bottom - wr.top;
+                        HRGN wndRgn    = CreateRoundRectRgn(0, 0, winW, winH, winH, winH);
+                        HRGN wndTopRgn = CreateRectRgn(0, 0, winW, winH / 2);
+                        CombineRgn(wndRgn, wndRgn, wndTopRgn, RGN_OR);
+                        DeleteObject(wndTopRgn);
+                        SetWindowRgn(hwnd, wndRgn, TRUE);
+                    }
                     g_state.notchState = NotchState::Showing;
                 }
             } else {
@@ -2544,7 +2708,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
-    ShowWindow(window, SW_HIDE);
+    // Show on the target monitor immediately so the notch is accessible,
+    // but only when a dedicated secondary (non-primary) monitor is available.
+    // On a single-monitor setup, stay hidden (tray-first) to avoid covering
+    // the desktop with the idle screen.
+    if (!g_firstRunPeek) {
+        MONITORINFO tmi{ sizeof(tmi) };
+        const bool targetIsSecondary =
+            g_state.targetMonitor != nullptr &&
+            GetMonitorInfoW(g_state.targetMonitor, &tmi) &&
+            !(tmi.dwFlags & MONITORINFOF_PRIMARY);
+        if (targetIsSecondary) {
+            ApplyIdleNotchPlacement();
+        }
+    }
     UpdateWindow(window);
 
     MSG msg{};
