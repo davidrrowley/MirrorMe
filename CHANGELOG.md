@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3] - 2026-05-15
+
+### Fixed
+
+- Idle notch now renders with correct flat-top/round-bottom pill shape; black rectangular corners behind the pill are eliminated
+- Shadow silhouette no longer visible at rest; window region shrinks to an invisible peek strip when the notch is fully hidden
+- Notch smoothly restores its full shape when hovered from the hidden state
+- KVM / capture-card reconnect: idle notch reliably reappears on the secondary monitor after disconnect/reconnect cycles
+
 ## [1.1.2] - 2026-05-14
 
 ### Fixed
